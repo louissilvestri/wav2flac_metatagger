@@ -21,10 +21,11 @@ def _rate_limit():
 
 
 def _get_client():
-    """Create and return a Discogs client using the stored token."""
+    """Create and return a Discogs client. Token comes from .env, with the
+    legacy settings.json value as fallback."""
     import discogs_client
-    settings = load_settings()
-    token = settings.get("discogs_token", "")
+    from config import get_secret
+    token = get_secret("DISCOGS_TOKEN") or load_settings().get("discogs_token", "")
     if not token:
         return None
     return discogs_client.Client("MusicManager/1.0", user_token=token)

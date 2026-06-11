@@ -4,8 +4,18 @@ import json
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load API keys/secrets from .env next to this file (gitignored)
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
 APP_NAME = "Music Manager"
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0-dev"
+
+
+def get_secret(name: str, default: str = "") -> str:
+    """Read an API key/secret from the environment (.env)."""
+    return os.environ.get(name, default)
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "MusicManager"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 DB_FILE = CONFIG_DIR / "activity.db"
