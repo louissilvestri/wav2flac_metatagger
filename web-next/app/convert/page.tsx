@@ -47,10 +47,20 @@ export default function ConvertPage() {
   );
 }
 
+// Files for the rest of the wizard: all files, or just the selected album
+// group when the folder contains multiple albums.
+function useWizardFiles() {
+  const { scan, albumGroup } = useConvertStore();
+  const files = scan?.files ?? [];
+  if (!scan?.multi_album || !albumGroup) return files;
+  return files.filter((f) => f.parsed_album === albumGroup);
+}
+
 // ── Step 1: Source ───────────────────────────────────────────────────────────
 
 function SourceStep() {
-  const { folder, setFolder, scan, setScan, setStep } = useConvertStore();
+  const { folder, setFolder, scan, setScan, setStep, albumGroup, setAlbumGroup } = useConvertStore();
+  const wizardFiles = useWizardFiles();
 
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const effectiveFolder = folder || String(settings.data?.input_folder ?? "");
@@ -94,11 +104,39 @@ function SourceStep() {
         {lines.length > 0 && <Terminal lines={lines} className="mt-3" />}
       </Panel>
 
-      {scan && !scan.error && scan.files.length > 0 && (
+      {scan?.multi_album && scan.album_groups && (
+        <Panel title="Multiple Albums Detected — pick one">
+          <div className="flex flex-wrap gap-2">
+            {scan.album_groups.map((g) => (
+              <button
+                key={g.album}
+                onClick={() => setAlbumGroup(g.album)}
+                className={cx(
+                  "chamfer cursor-pointer border px-3 py-1.5 font-mono text-[0.74rem]",
+                  "transition-[box-shadow] duration-[240ms]",
+                  albumGroup === g.album
+                    ? "border-accent bg-accent text-bg"
+                    : "border-accent/30 text-accent hover:box-glow",
+                )}
+              >
+                {g.artist ? `${g.artist} — ` : ""}{g.album || "Unknown"}{" "}
+                <span className="opacity-70">({g.file_count})</span>
+              </button>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      {scan && !scan.error && wizardFiles.length > 0 && (
         <Panel
-          title={`Files (${scan.files.length})`}
+          title={`Files (${wizardFiles.length}${scan.multi_album && albumGroup ? ` of ${scan.files.length}` : ""})`}
           actions={
-            <Button variant="solid" onClick={() => setStep("identify")}>
+            <Button
+              variant="solid"
+              disabled={!!scan.multi_album && !albumGroup}
+              title={scan.multi_album && !albumGroup ? "Select an album group first" : undefined}
+              onClick={() => setStep("identify")}
+            >
               Continue →
             </Button>
           }
@@ -112,7 +150,7 @@ function SourceStep() {
               </tr>
             </thead>
             <tbody>
-              {scan.files.map((f, i) => (
+              {wizardFiles.map((f, i) => (
                 <tr key={f.path} className="border-b border-white/5">
                   <td className="p-1.5 text-muted">{f.parsed_track_number ?? i + 1}</td>
                   <td className="p-1.5">{f.parsed_title ?? <span className="text-muted">—</span>}</td>
@@ -130,12 +168,25 @@ function SourceStep() {
 // ── Step 2: Identify ─────────────────────────────────────────────────────────
 
 function IdentifyStep() {
-  const { scan, folder, identifyResult, setIdentify, setChoices, setStep } = useConvertStore();
+  const { scan, folder, albumGroup, identifyResult, setIdentify, setChoices, setStep } = useConvertStore();
+  const wizardFiles = useWizardFiles();
   const settingsQ = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const effectiveFolder = scan?.folder || folder || String(settingsQ.data?.input_folder ?? "");
 
   const doIdentify = useMutation({
-    mutationFn: () => api.identify({ folder_path: effectiveFolder }),
+    mutationFn: () => {
+      // Multi-album folders: the folder's CUE belongs to one specific album,
+      // so identify the SELECTED group by its own name + fingerprints instead
+      if (scan?.multi_album && albumGroup) {
+        const group = scan.album_groups?.find((g) => g.album === albumGroup);
+        return api.identify({
+          artist: group?.artist ?? "",
+          album: albumGroup,
+          file_paths: wizardFiles.map((f) => f.path),
+        });
+      }
+      return api.identify({ folder_path: effectiveFolder });
+    },
     onSuccess: (result) => {
       setIdentify(result);
       setChoices(defaultChoices(buildRows(result, cueValues(scan?.cue_metadata ?? null))));
@@ -231,6 +282,7 @@ function ReviewStep() {
     scan, identifyResult: r, choices, setChoices, setStep,
     useProviderTitles, setUseProviderTitles, artChoiceId, setArtChoice,
   } = useConvertStore();
+  const wizardFiles = useWizardFiles();
 
   if (!r) return null;
   const rows = buildRows(r, cueValues(scan?.cue_metadata ?? null));
@@ -248,7 +300,8 @@ function ReviewStep() {
   ];
 
   const matched = r.tracks.length;
-  const scanned = scan?.files.length ?? 0;
+  const scanned = wizardFiles.length;
+  const discCount = Math.max(1, ...r.tracks.map((t) => t.disc_number || 1));
 
   return (
     <div className="space-y-3">
@@ -265,6 +318,12 @@ function ReviewStep() {
         {matched !== scanned && (
           <p className="mt-2 font-mono text-xs text-accent-2">
             ⚠ release has {matched} tracks; folder has {scanned} files
+          </p>
+        )}
+        {discCount > 1 && (
+          <p className="mt-2 font-mono text-xs text-muted">
+            Multi-disc release ({discCount} discs) — files map to discs in sequence
+            {matched === scanned ? "" : "; counts must match for disc mapping"}.
           </p>
         )}
       </Panel>
@@ -308,6 +367,7 @@ function ConvertStep() {
     scan, identifyResult: r, choices, useProviderTitles, artChoiceId,
     jobId, setJobId, setStep, reset,
   } = useConvertStore();
+  const wizardFiles = useWizardFiles();
 
   const start = useMutation({
     mutationFn: () => {
@@ -317,11 +377,19 @@ function ConvertStep() {
       else if (artChoiceId?.startsWith("url:")) options.art_url = artChoiceId.slice(4);
       if (scan?.folder) options.input_folder = scan.folder;
 
+      // Multi-disc mapping: when the identified release spans multiple discs
+      // and file count matches total tracks, files map onto the release's
+      // (disc, position) sequence instead of all landing on disc 1
+      const flat = (r?.tracks ?? []).slice()
+        .sort((a, b) => (a.disc_number - b.disc_number) || (a.position - b.position));
+      const multiDisc = flat.some((t) => (t.disc_number || 1) > 1);
+      const mapByIndex = multiDisc && flat.length === wizardFiles.length;
+
       return api.startConvert({
-        files: (scan?.files ?? []).map((f, i) => ({
+        files: wizardFiles.map((f, i) => ({
           path: f.path,
-          track_number: f.parsed_track_number ?? i + 1,
-          disc_number: 1,
+          track_number: mapByIndex ? flat[i].position : (f.parsed_track_number ?? i + 1),
+          disc_number: mapByIndex ? (flat[i].disc_number || 1) : 1,
           parsed_title: f.parsed_title,
           parsed_artist: f.parsed_artist,
           parsed_album: f.parsed_album,
@@ -341,7 +409,7 @@ function ConvertStep() {
           <>
             <Button variant="ghost" onClick={() => setStep("review")}>← Back</Button>
             <Button variant="solid" disabled={start.isPending} onClick={() => start.mutate()}>
-              {start.isPending ? "Starting…" : `Start (${scan?.files.length ?? 0} files)`}
+              {start.isPending ? "Starting…" : `Start (${wizardFiles.length} files)`}
             </Button>
           </>
         )}

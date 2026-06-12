@@ -52,6 +52,7 @@ export interface ScanResult {
   cue_found?: boolean;
   cue_metadata?: CueMetadata | null;
   multi_album?: boolean;
+  album_groups?: { album: string; artist: string; file_count: number }[] | null;
 }
 
 export interface ScannedFile {
@@ -162,6 +163,43 @@ export interface LibraryScan {
   output_folder: string;
 }
 
+export interface AlbumCandidate {
+  release_group_id: string;
+  release_id: string;
+  album: string;
+  artist: string;
+  date: string;
+  first_release_date: string;
+  type: string;
+  secondary_types: string[];
+  country: string;
+  is_original: boolean;
+}
+
+export interface ReleaseDetails {
+  id: string;
+  title: string;
+  artist: string;
+  artist_id?: string;
+  date: string;
+  first_release_date?: string;
+  genre?: string;
+  release_group_id?: string;
+  error?: string;
+  discs: { position: number; tracks: {
+    position: number; title: string; artist: string;
+    recording_id?: string; disc_number?: number;
+  }[] }[];
+}
+
+export interface ReassignPreview {
+  changes: { field: string; key: string; old: string; new: string }[];
+  current_path: string;
+  new_path: string;
+  path_changed: boolean;
+  current_has_art: boolean;
+}
+
 export interface HistoryEntry {
   id: number;
   timestamp: string;
@@ -213,6 +251,14 @@ export const api = {
   stats: () => get<Stats>("/api/stats"),
 
   libraryScan: () => get<LibraryScan>("/api/library/scan"),
+  findOriginalAlbum: (artist: string, title: string) =>
+    get<AlbumCandidate[]>(`/api/library/original-album?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`),
+  getRelease: (id: string) => get<ReleaseDetails>(`/api/releases/${id}`),
+  reassignTrack: (req: { path: string; metadata: Record<string, string>;
+                         move_file?: boolean; art_release_id?: string | null }) =>
+    post<{ success: boolean; new_path: string; error?: string }>("/api/library/reassign", req),
+  reassignPreview: (path: string, metadata: Record<string, string>) =>
+    post<ReassignPreview>("/api/library/reassign/preview", { path, metadata }),
   deleteLibraryFile: (path: string) =>
     post<{ success: boolean; error?: string }>("/api/library/delete-file", { path }),
   embeddedArt: (path: string) =>

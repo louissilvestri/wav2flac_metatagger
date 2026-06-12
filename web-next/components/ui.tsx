@@ -4,7 +4,8 @@
  * Every component maps 1:1 to a pattern in the style guide.
  */
 
-import { ReactNode, ButtonHTMLAttributes, InputHTMLAttributes, SelectHTMLAttributes } from "react";
+import { ReactNode, ButtonHTMLAttributes, InputHTMLAttributes, SelectHTMLAttributes, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 export function cx(...parts: (string | false | null | undefined)[]) {
   return parts.filter(Boolean).join(" ");
@@ -213,21 +214,32 @@ export function Progress({ value, max }: { value: number; max: number }) {
 
 // ── Dialog ────────────────────────────────────────────────────────────────────
 
-export function Dialog({ open, title, children, onClose }: {
-  open: boolean; title: string; children: ReactNode; onClose: () => void;
+export function Dialog({ open, title, children, onClose, wide }: {
+  open: boolean; title: string; children: ReactNode; onClose: () => void; wide?: boolean;
 }) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 bg-[rgba(2,4,8,0.62)]" onClick={onClose}>
+  // Portal to <body>: a dialog rendered inside a clip-path/transform ancestor
+  // (e.g. a chamfered Panel) gets clipped to that ancestor's box — fixed
+  // positioning alone does not escape it.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  if (!open || !mounted) return null;
+  return createPortal(
+    <div className="fixed inset-0 bg-[rgba(2,4,8,0.62)]" style={{ zIndex: 9999 }} onClick={onClose}>
       <div
-        className="chamfer absolute left-1/2 top-1/2 w-[min(92vw,560px)] -translate-x-1/2 -translate-y-1/2
-                   border border-accent bg-surface p-5 shadow-[0_16px_40px_rgba(0,0,0,0.6)]"
+        className={cx(
+          "chamfer absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2",
+          "max-h-[88vh] overflow-y-auto border border-accent bg-surface p-5",
+          "shadow-[0_16px_40px_rgba(0,0,0,0.6)]",
+          wide ? "w-[min(94vw,860px)]" : "w-[min(92vw,560px)]",
+        )}
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="font-display mb-3 text-accent glow-accent">{title}</h3>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

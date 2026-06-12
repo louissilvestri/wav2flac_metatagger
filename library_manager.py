@@ -626,12 +626,26 @@ def reassign_track(
 
     Returns: {success, new_path, error}
     """
-    from tagger import embed_metadata
+    from tagger import embed_metadata, read_metadata
     from file_manager import build_output_path
 
     src = Path(flac_path)
     if not src.exists():
         return {"success": False, "new_path": str(src), "error": "File not found"}
+
+    # Read existing tags BEFORE re-tagging: path fields absent from
+    # new_metadata must fall back to what the file already has — a partial
+    # update (e.g. genre only) must never relocate a track to "Unknown Album".
+    current = read_metadata(str(src)).get("tags", {})
+
+    def _field(key: str, tag: str, default: str = "") -> str:
+        val = new_metadata.get(key)
+        if val:
+            return str(val)
+        cur = current.get(tag, "")
+        if isinstance(cur, list):
+            cur = cur[0] if cur else ""
+        return str(cur) if cur else default
 
     # Re-tag in place (with optional new album art)
     tag_result = embed_metadata(str(src), new_metadata, album_art=album_art)
@@ -641,16 +655,17 @@ def reassign_track(
     if not move_file:
         return {"success": True, "new_path": str(src), "error": None}
 
-    # Build the new path based on updated metadata
+    # Build the new path from new metadata, falling back to existing tags
     new_path = build_output_path(
         output_root=output_root,
-        artist=new_metadata.get("albumartist", new_metadata.get("artist", "Unknown Artist")),
-        album=new_metadata.get("album", "Unknown Album"),
-        year=new_metadata.get("date", ""),
-        disc_number=int(new_metadata.get("discnumber", "1") or "1"),
-        total_discs=int(new_metadata.get("disctotal", "1") or "1"),
-        track_number=int(new_metadata.get("tracknumber", "1") or "1"),
-        title=new_metadata.get("title", "Unknown"),
+        artist=_field("albumartist", "ALBUMARTIST",
+                      _field("artist", "ARTIST", "Unknown Artist")),
+        album=_field("album", "ALBUM", "Unknown Album"),
+        year=_field("date", "DATE"),
+        disc_number=int(_field("discnumber", "DISCNUMBER", "1") or "1"),
+        total_discs=int(_field("disctotal", "DISCTOTAL", "1") or "1"),
+        track_number=int(_field("tracknumber", "TRACKNUMBER", "1") or "1"),
+        title=_field("title", "TITLE", "Unknown"),
     )
 
     if new_path == src:

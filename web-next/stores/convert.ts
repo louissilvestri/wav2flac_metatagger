@@ -15,6 +15,7 @@ interface ConvertState {
   step: WizardStep;
   folder: string;
   scan: ScanResult | null;
+  albumGroup: string | null;   // selected parsed_album when folder has multiple albums
   identifyResult: IdentifyResult | null;
   choices: Choices;            // per-field include/value/source decisions
   useProviderTitles: boolean;  // provider track titles vs CUE titles
@@ -24,6 +25,7 @@ interface ConvertState {
   setStep: (s: WizardStep) => void;
   setFolder: (f: string) => void;
   setScan: (s: ScanResult | null) => void;
+  setAlbumGroup: (g: string | null) => void;
   setIdentify: (r: IdentifyResult | null) => void;
   setChoices: (c: Choices) => void;
   setUseProviderTitles: (v: boolean) => void;
@@ -36,6 +38,7 @@ const initial = {
   step: "source" as WizardStep,
   folder: "",
   scan: null,
+  albumGroup: null,
   identifyResult: null,
   choices: {},
   useProviderTitles: true,
@@ -47,7 +50,8 @@ export const useConvertStore = create<ConvertState>((set) => ({
   ...initial,
   setStep: (step) => set({ step }),
   setFolder: (folder) => set({ folder }),
-  setScan: (scan) => set({ scan }),
+  setScan: (scan) => set({ scan, albumGroup: null }),
+  setAlbumGroup: (albumGroup) => set({ albumGroup }),
   setIdentify: (identifyResult) => set({ identifyResult }),
   setChoices: (choices) => set({ choices }),
   setUseProviderTitles: (useProviderTitles) => set({ useProviderTitles }),

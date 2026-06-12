@@ -7,8 +7,8 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, LibraryAlbum, LibraryFile, LibraryScan, IdentifyResult } from "@/lib/api";
-import { Panel, Button, Input, StatCard, Spinner, Tag, Dialog, Terminal, TermLine, cx } from "@/components/ui";
+import { api, LibraryAlbum, LibraryFile, LibraryScan, IdentifyResult, AlbumCandidate, FieldValue } from "@/lib/api";
+import { Panel, Button, Input, Field, StatCard, Spinner, Tag, Dialog, Terminal, TermLine, cx } from "@/components/ui";
 import { MetadataCompare, CompareRow, Choices, defaultChoices, asText } from "@/components/MetadataCompare";
 import { ArtPicker, ArtOption } from "@/components/ArtPicker";
 
@@ -168,6 +168,15 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
   const [choices, setChoices] = useState<Choices>({});
   const [artChoice, setArtChoice] = useState<string>(album.has_art ? "keep" : "auto");
 
+  // Thumbnail of the currently embedded art for the "Current" option
+  const fileWithArt = album.files.find((f) => f.has_art);
+  const embThumb = useQuery({
+    queryKey: ["embedded-art", fileWithArt?.path],
+    queryFn: () => api.embeddedArt(fileWithArt!.path),
+    enabled: !!fileWithArt && !!result,
+    staleTime: Infinity,
+  });
+
   const identify = useMutation({
     mutationFn: () => api.identify({
       artist: album.albumartist,
@@ -192,16 +201,21 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
   const apply = useMutation({
     mutationFn: () => {
       if (!result) throw new Error("no identification");
+      const pick = (key: string, fallback: string) =>
+        choices[key]?.include ? choices[key].value : fallback;
+
       const meta: Record<string, string> = {
+        // Path-building fields are ALWAYS sent: unchecked = keep the current
+        // value, never blank (a blank album becomes "Unknown Album" on disk)
+        albumartist: pick("artist", album.albumartist),
+        album: pick("title", album.album),
+        date: pick("original_date", album.date),
         musicbrainz_albumid: result.ids.musicbrainz_release ?? "",
         disctotal: String(Math.max(1, ...result.tracks.map((t) => t.disc_number || 1))),
       };
-      const map: Record<string, string> = {
-        artist: "albumartist", title: "album", original_date: "date",
-        genre: "genre", label: "label",
-      };
-      for (const [key, tag] of Object.entries(map)) {
-        if (choices[key]?.include) meta[tag] = choices[key].value;
+      // Non-path fields: only send when checked (merge keeps existing tags)
+      for (const key of ["genre", "label"] as const) {
+        if (choices[key]?.include) meta[key] = choices[key].value;
       }
 
       const tracks = album.files.map((f) => {
@@ -240,7 +254,16 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
     : [];
 
   const artOptions: ArtOption[] = result ? [
-    ...(album.has_art ? [{ id: "keep", label: "Current", sublabel: "keep embedded art" }] : []),
+    ...(album.has_art ? [{
+      id: "keep",
+      label: "Current",
+      sublabel: embThumb.data?.success
+        ? `${embThumb.data.width}×${embThumb.data.height}`
+        : "keep embedded art",
+      thumbSrc: embThumb.data?.success && embThumb.data.data
+        ? `data:image/jpeg;base64,${embThumb.data.data}`
+        : undefined,
+    }] : []),
     { id: "auto", label: "Auto", sublabel: "best provider art" },
     ...result.art_candidates.map((a) => ({
       id: `url:${a.url}`,
@@ -378,9 +401,10 @@ function DuplicatesView({ data }: { data: LibraryScan }) {
   );
 }
 
-// ── Track detail dialog ───────────────────────────────────────────────────────
+// ── Track detail dialog with single-track reassign ────────────────────────────
 
 function TrackDetail({ file, onClose }: { file: LibraryFile | null; onClose: () => void }) {
+  const [mode, setMode] = useState<null | "reassign" | "cleanup">(null);
   const art = useQuery({
     queryKey: ["embedded-art", file?.path],
     queryFn: () => api.embeddedArt(file!.path),
@@ -396,7 +420,7 @@ function TrackDetail({ file, onClose }: { file: LibraryFile | null; onClose: () 
   ];
 
   return (
-    <Dialog open title={file.title || file.filename} onClose={onClose}>
+    <Dialog open wide title={file.title || file.filename} onClose={onClose}>
       <div className="flex gap-4">
         <div className="size-28 shrink-0 overflow-hidden border border-white/15 bg-[#05080b]">
           {art.data?.success && art.data.data ? (
@@ -411,7 +435,7 @@ function TrackDetail({ file, onClose }: { file: LibraryFile | null; onClose: () 
             {ROWS.map(([label, value]) => (
               <tr key={label} className="border-b border-white/5">
                 <td className="py-0.5 pr-3 text-muted">{label}</td>
-                <td className="max-w-[260px] truncate py-0.5" title={value}>{value || "—"}</td>
+                <td className="max-w-[420px] truncate py-0.5" title={value}>{value || "—"}</td>
               </tr>
             ))}
             <tr>
@@ -425,6 +449,308 @@ function TrackDetail({ file, onClose }: { file: LibraryFile | null; onClose: () 
         </table>
       </div>
       <p className="mt-3 break-all font-mono text-[0.66rem] text-muted">{file.path}</p>
+
+      {mode === null && (
+        <div className="mt-3 flex gap-2">
+          <Button variant="solid" onClick={() => setMode("cleanup")}>
+            Auto Clean Up
+          </Button>
+          <Button variant="outline" onClick={() => setMode("reassign")}>
+            Find Original Album…
+          </Button>
+        </div>
+      )}
+      {mode === "cleanup" && <TrackAutoCleanup file={file} onDone={onClose} />}
+      {mode === "reassign" && <TrackReassign file={file} onDone={onClose} />}
     </Dialog>
   );
+}
+
+/** Single-track Auto Clean Up: fingerprint THIS file, fill in whatever is
+ * missing. Defaults check only empty fields — existing values stay put
+ * unless you opt in. */
+function TrackAutoCleanup({ file, onDone }: { file: LibraryFile; onDone: () => void }) {
+  const qc = useQueryClient();
+  const [result, setResult] = useState<IdentifyResult | null>(null);
+  const [choices, setChoices] = useState<Choices>({});
+
+  const identify = useMutation({
+    mutationFn: () => api.identify({
+      artist: normalizeArtist(file.artist || file.albumartist),
+      album: file.album,
+      file_paths: [file.path],
+    }),
+    onSuccess: (r) => {
+      setResult(r);
+      const rows = buildTrackRows(r, file);
+      const defaults = defaultChoices(rows);
+      // Fill-missing semantics: only pre-check fields that are currently empty
+      for (const row of rows) {
+        if (row.current && defaults[row.key]) defaults[row.key].include = false;
+      }
+      setChoices(defaults);
+    },
+  });
+
+  const apply = useMutation({
+    mutationFn: () => {
+      if (!result) throw new Error("not identified");
+      const match = matchTrack(result, file);
+      const pick = (key: string, fallback: string) =>
+        choices[key]?.include ? choices[key].value : fallback;
+
+      const metadata: Record<string, string> = {
+        // Path fields always present (fallback = current value)
+        title: pick("title", file.title),
+        artist: pick("artist", file.artist),
+        albumartist: pick("albumartist", file.albumartist),
+        album: pick("album", file.album),
+        date: pick("date", file.date),
+        tracknumber: file.tracknumber || String(match?.position ?? "1"),
+        discnumber: file.discnumber || String(match?.disc_number ?? "1"),
+      };
+      if (choices.genre?.include) metadata.genre = choices.genre.value;
+      if (result.ids.musicbrainz_release) metadata.musicbrainz_albumid = result.ids.musicbrainz_release;
+      if (match?.recording_id) metadata.musicbrainz_trackid = match.recording_id;
+
+      return api.reassignTrack({
+        path: file.path, metadata, move_file: true, art_release_id: null,
+      });
+    },
+    onSuccess: (res) => {
+      if (res.success) {
+        qc.invalidateQueries({ queryKey: ["library"] });
+        onDone();
+      }
+    },
+  });
+
+  const rows = result ? buildTrackRows(result, file) : [];
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-white/10 pt-3">
+      {!result ? (
+        <div className="flex items-center gap-3">
+          <Button variant="solid" disabled={identify.isPending} onClick={() => identify.mutate()}>
+            {identify.isPending ? "Fingerprinting…" : "Identify This Track"}
+          </Button>
+          {identify.isPending && <Spinner label="fingerprint + providers…" />}
+          {identify.error && <span className="font-mono text-xs text-alert">{String(identify.error)}</span>}
+        </div>
+      ) : result.identity.method === "none" ? (
+        <p className="font-mono text-sm text-alert">
+          No match found — try “Find Original Album” with adjusted search terms.
+        </p>
+      ) : (
+        <>
+          <p className="font-mono text-xs text-muted">
+            Identified via <b className="text-accent">{result.identity.method}</b>
+            {result.identity.confidence_note && ` (${result.identity.confidence_note})`} —
+            empty fields are pre-checked; check others to overwrite.
+          </p>
+          <MetadataCompare rows={rows} choices={choices} onChange={setChoices} />
+          <div className="flex gap-2">
+            <Button variant="solid" disabled={apply.isPending} onClick={() => apply.mutate()}>
+              {apply.isPending ? "Applying…" : "Apply"}
+            </Button>
+            {apply.data && !apply.data.success && (
+              <span className="font-mono text-xs text-alert">{apply.data.error}</span>
+            )}
+            {apply.error && <span className="font-mono text-xs text-alert">{String(apply.error)}</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function buildTrackRows(r: IdentifyResult, file: LibraryFile): CompareRow[] {
+  const match = matchTrack(r, file);
+  const trackField = (value?: string): FieldValue | undefined =>
+    value ? { value, source: r.track_source || "musicbrainz",
+              candidates: [{ value, source: r.track_source || "musicbrainz" }] } : undefined;
+  return [
+    { key: "title", label: "Title", current: file.title, merged: trackField(match?.title) },
+    { key: "artist", label: "Artist", current: file.artist, merged: trackField(match?.artist) },
+    { key: "albumartist", label: "Album Artist", current: file.albumartist, merged: r.fields.artist },
+    { key: "album", label: "Album", current: file.album, merged: r.fields.title },
+    { key: "date", label: "Date", current: file.date, merged: r.fields.original_date },
+    { key: "genre", label: "Genre", current: file.genre, merged: r.fields.genre },
+  ];
+}
+
+/** Single-track reassign: original-album candidates sorted by year with
+ * "Likely Original" badge, then a per-field diff preview before applying. */
+function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void }) {
+  const qc = useQueryClient();
+  const [artist, setArtist] = useState(normalizeArtist(file.artist));
+  const [title, setTitle] = useState(file.title);
+  const [selected, setSelected] = useState<AlbumCandidate | null>(null);
+  const [metadata, setMetadata] = useState<Record<string, string> | null>(null);
+  const [included, setIncluded] = useState<Record<string, boolean>>({});
+
+  const search = useMutation({
+    mutationFn: () => api.findOriginalAlbum(artist, title),
+  });
+
+  const choose = useMutation({
+    mutationFn: async (cand: AlbumCandidate) => {
+      const details = await api.getRelease(cand.release_id);
+      if (details.error) throw new Error(details.error);
+      // Align this file to a track in the release by title
+      let match = null;
+      for (const disc of details.discs) {
+        for (const t of disc.tracks) {
+          const a = t.title.toLowerCase().trim(), b = (file.title || "").toLowerCase().trim();
+          if (a === b || a.includes(b) || b.includes(a)) {
+            match = { ...t, disc_number: disc.position, track_total: disc.tracks.length };
+            break;
+          }
+        }
+        if (match) break;
+      }
+      const meta: Record<string, string> = {
+        title: match?.title ?? file.title,
+        artist: match?.artist || details.artist || file.artist,
+        albumartist: details.artist ?? "",
+        album: details.title ?? "",
+        tracknumber: String(match?.position ?? file.tracknumber ?? "1"),
+        discnumber: String(match?.disc_number ?? 1),
+        date: cand.first_release_date || details.first_release_date || details.date || "",
+        genre: details.genre ?? "",
+        musicbrainz_albumid: cand.release_id,
+        musicbrainz_trackid: match?.recording_id ?? "",
+      };
+      const preview = await api.reassignPreview(file.path, meta);
+      return { cand, meta, preview };
+    },
+    onSuccess: ({ cand, meta, preview }) => {
+      setSelected(cand);
+      setMetadata(meta);
+      const inc: Record<string, boolean> = {};
+      for (const c of preview.changes) inc[c.key.toLowerCase()] = true;
+      setIncluded(inc);
+    },
+  });
+
+  const apply = useMutation({
+    mutationFn: () => {
+      const chosen: Record<string, string> = {};
+      for (const [key, value] of Object.entries(metadata!)) {
+        // ID fields ride along; visible fields respect the checkboxes
+        if (key.startsWith("musicbrainz_") || included[key] !== false) chosen[key] = value;
+      }
+      return api.reassignTrack({
+        path: file.path, metadata: chosen, move_file: true,
+        art_release_id: selected?.release_id ?? null,
+      });
+    },
+    onSuccess: (res) => {
+      if (res.success) {
+        qc.invalidateQueries({ queryKey: ["library"] });
+        onDone();
+      }
+    },
+  });
+
+  const preview = choose.data?.preview;
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-white/10 pt-3">
+      <div className="flex items-end gap-2">
+        <Field label="Artist" className="flex-1">
+          <Input value={artist} onChange={(e) => setArtist(e.target.value)} />
+        </Field>
+        <Field label="Track Title" className="flex-1">
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+        </Field>
+        <Button variant="solid" disabled={search.isPending || !artist || !title}
+                onClick={() => search.mutate()}>
+          {search.isPending ? "Searching…" : "Search"}
+        </Button>
+      </div>
+
+      {search.data && search.data.length === 0 && (
+        <p className="font-mono text-xs text-muted">No original album found. Adjust the search terms.</p>
+      )}
+
+      {search.data && search.data.length > 0 && !preview && (
+        <div className="max-h-56 space-y-1 overflow-y-auto">
+          {search.data.map((c) => (
+            <button
+              key={c.release_group_id || c.release_id}
+              disabled={choose.isPending}
+              onClick={() => choose.mutate(c)}
+              className={cx(
+                "flex w-full cursor-pointer items-center gap-3 border px-3 py-1.5 text-left font-mono text-[0.74rem]",
+                "transition-colors hover:border-accent/60",
+                c.is_original ? "border-ok/50 bg-ok/5" : "border-white/10",
+              )}
+            >
+              <span className="truncate">{c.album}</span>
+              <span className="text-muted">{c.first_release_date || c.date || "?"}</span>
+              <span className="text-muted">{c.type}</span>
+              {c.secondary_types.length > 0 && (
+                <span className="text-accent-2">{c.secondary_types.join(", ")}</span>
+              )}
+              {c.is_original && <Tag tone="ok">Likely Original</Tag>}
+            </button>
+          ))}
+          {choose.isPending && <Spinner label="loading release + building preview…" />}
+        </div>
+      )}
+      {choose.error && <p className="font-mono text-xs text-alert">{String(choose.error)}</p>}
+
+      {preview && metadata && (
+        <>
+          <table className="w-full font-mono text-[0.74rem]">
+            <thead>
+              <tr className="border-b border-white/15 text-left text-[0.62rem] uppercase text-muted">
+                <th className="w-8 p-1" /><th className="p-1">Field</th>
+                <th className="p-1">Current</th><th className="p-1">New</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.changes.map((c) => (
+                <tr key={c.key} className="border-b border-white/5">
+                  <td className="p-1 text-center">
+                    <input type="checkbox" className="size-3.5 accent-[#22d3ee]"
+                      checked={included[c.key.toLowerCase()] !== false}
+                      onChange={(e) => setIncluded({ ...included, [c.key.toLowerCase()]: e.target.checked })} />
+                  </td>
+                  <td className="p-1">{c.field}</td>
+                  <td className="max-w-[200px] truncate p-1 text-muted" title={c.old}>{c.old || "—"}</td>
+                  <td className="max-w-[200px] truncate p-1 text-ok" title={c.new}>{c.new}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {preview.path_changed && (
+            <p className="break-all font-mono text-[0.66rem] text-muted">
+              → {preview.new_path}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <Button variant="solid" disabled={apply.isPending} onClick={() => apply.mutate()}>
+              {apply.isPending ? "Applying…" : "Apply Reassign"}
+            </Button>
+            <Button variant="ghost" onClick={() => { setSelected(null); setMetadata(null); choose.reset(); }}>
+              ← Candidates
+            </Button>
+            {apply.data && !apply.data.success && (
+              <span className="font-mono text-xs text-alert">{apply.data.error}</span>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** "English Beat, The" → "The English Beat"; Various Artists → "" */
+function normalizeArtist(artist: string): string {
+  if (!artist) return "";
+  if (["various artists", "various"].includes(artist.toLowerCase().trim())) return "";
+  const m = artist.match(/^(.+),\s*(The|A|An|Les|La|Le|El|Los|Las|Die|Das|Der)$/i);
+  return m ? `${m[2]} ${m[1]}` : artist;
 }

@@ -273,6 +273,22 @@ def fingerprint_status():
     }
 
 
+@app.get("/api/metadata/precedence")
+def metadata_precedence():
+    """Effective per-field provider precedence + enabled providers, for the
+    Settings editor. Saved back via PUT /api/settings (merge_precedence /
+    metadata_providers_enabled keys)."""
+    from services.metadata.merge import get_precedence, DEFAULT_PRECEDENCE
+    from services.metadata.aggregator import DEFAULT_ENABLED
+    settings = load_settings()
+    return {
+        "precedence": get_precedence(settings),
+        "defaults": DEFAULT_PRECEDENCE,
+        "enabled": settings.get("metadata_providers_enabled", DEFAULT_ENABLED),
+        "all_providers": DEFAULT_ENABLED,
+    }
+
+
 # ─── History / Dashboard ────────────────────────────────────────────────────────
 
 @app.get("/api/history")
@@ -393,6 +409,21 @@ def browse_dialog(req: BrowseRequest):
 
 # ─── Static frontend (Phase 3: Next.js export) ──────────────────────────────────
 
+class _FrontendFiles(StaticFiles):
+    """Static serving with sane caching: HTML is never cached (so a rebuild
+    is picked up on plain reload — no stale UI referencing old chunks), while
+    hashed /_next/static assets cache forever."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        content_type = response.headers.get("content-type", "")
+        if content_type.startswith("text/html"):
+            response.headers["Cache-Control"] = "no-cache"
+        elif "/_next/static/" in scope.get("path", ""):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 _NEXT_OUT = Path(__file__).resolve().parent.parent / "web-next" / "out"
 if _NEXT_OUT.is_dir():
-    app.mount("/", StaticFiles(directory=str(_NEXT_OUT), html=True), name="frontend")
+    app.mount("/", _FrontendFiles(directory=str(_NEXT_OUT), html=True), name="frontend")

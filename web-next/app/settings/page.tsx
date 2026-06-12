@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, Settings } from "@/lib/api";
-import { Panel, Button, Input, Field, Select, Checkbox, Spinner, Tag } from "@/components/ui";
+import { Panel, Button, Input, Field, Select, Checkbox, Spinner } from "@/components/ui";
 
 export default function SettingsPage() {
   const qc = useQueryClient();
@@ -104,21 +104,7 @@ export default function SettingsPage() {
         </div>
       </Panel>
 
-      <Panel title="Metadata Providers">
-        <p className="mb-3 text-sm text-muted">
-          Identification and enrichment query all providers and merge per-field
-          (precedence configurable in <code className="font-mono text-accent">.env</code>/settings).
-          Keys live in <code className="font-mono text-accent">.env</code>.
-        </p>
-        <div className="flex flex-wrap gap-2 font-mono text-xs">
-          {["musicbrainz", "discogs", "lastfm", "itunes", "deezer", "fanarttv"].map((p) => (
-            <Tag key={p} tone="ok">{p}</Tag>
-          ))}
-          <Tag tone={fp.data?.available ? "ok" : "alert"}>
-            acoustid {fp.data?.available ? "(fpcalc ready)" : "(fpcalc missing)"}
-          </Tag>
-        </div>
-      </Panel>
+      <ProvidersPanel form={form} set={set} fpAvailable={!!fp.data?.available} />
 
       <Panel title="Output Structure">
         <Field label="Multi-disc albums">
@@ -131,4 +117,111 @@ export default function SettingsPage() {
       </Panel>
     </div>
   );
+}
+
+// ── Provider enable/precedence editor ─────────────────────────────────────────
+
+const FIELD_LABELS: Record<string, string> = {
+  title: "Album Title", artist: "Artist", original_date: "Original Date",
+  release_date: "Release Date", genre: "Genre", styles: "Styles",
+  label: "Label", catalog_number: "Catalog #", barcode: "Barcode", country: "Country",
+};
+
+function ProvidersPanel({ form, set, fpAvailable }: {
+  form: Settings;
+  set: (key: string, value: unknown) => void;
+  fpAvailable: boolean;
+}) {
+  const meta = useQuery({
+    queryKey: ["precedence"],
+    queryFn: () => fetch("/api/metadata/precedence").then((r) => r.json()) as Promise<{
+      precedence: Record<string, string[]>;
+      defaults: Record<string, string[]>;
+      enabled: string[];
+      all_providers: string[];
+    }>,
+  });
+
+  if (!meta.data) return <Panel title="Metadata Providers"><Spinner /></Panel>;
+
+  const enabled: string[] =
+    (form.metadata_providers_enabled as string[] | undefined) ?? meta.data.enabled;
+  const precedence: Record<string, string[]> =
+    (form.merge_precedence as Record<string, string[]> | undefined) ?? {};
+  const effective = (field: string) =>
+    precedence[field] ?? meta.data!.precedence[field] ?? [];
+
+  const toggleProvider = (p: string) => {
+    const next = enabled.includes(p) ? enabled.filter((x) => x !== p) : [...enabled, p];
+    set("metadata_providers_enabled", next);
+  };
+
+  const promote = (field: string, source: string) => {
+    const order = effective(field);
+    const idx = order.indexOf(source);
+    if (idx <= 0) return;
+    const next = [...order];
+    [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+    set("merge_precedence", { ...precedence, [field]: next });
+  };
+
+  return (
+    <Panel title="Metadata Providers">
+      <p className="mb-2 text-sm text-muted">
+        Enabled providers are queried on every identify; fields merge by the
+        precedence below. Click ◂ to promote a source. API keys live in{" "}
+        <code className="font-mono text-accent">.env</code>.
+      </p>
+
+      <div className="mb-4 flex flex-wrap gap-3">
+        {meta.data.all_providers.map((p) => (
+          <Checkbox
+            key={p}
+            label={p === "acoustid" && !fpAvailable ? `${p} (fpcalc missing)` : p}
+            checked={enabled.includes(p)}
+            onChange={() => toggleProvider(p)}
+          />
+        ))}
+      </div>
+
+      <table className="w-full font-mono text-[0.72rem]">
+        <tbody>
+          {Object.entries(FIELD_LABELS).map(([field, label]) => (
+            <tr key={field} className="border-b border-white/5">
+              <td className="w-32 py-1 pr-2 text-muted">{label}</td>
+              <td className="py-1">
+                <div className="flex flex-wrap items-center gap-1">
+                  {effective(field).map((source, i) => (
+                    <span
+                      key={source}
+                      className={cxLocal(
+                        "flex items-center gap-1 rounded-sm border px-1.5 py-0.5",
+                        i === 0 ? "border-accent text-accent" : "border-white/15 text-muted",
+                        !enabled.includes(source) && "opacity-40 line-through",
+                      )}
+                    >
+                      {i > 0 && (
+                        <button
+                          className="cursor-pointer text-accent-2 hover:text-accent"
+                          title={`Promote ${source}`}
+                          onClick={() => promote(field, source)}
+                        >
+                          ◂
+                        </button>
+                      )}
+                      {source}
+                    </span>
+                  ))}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Panel>
+  );
+}
+
+function cxLocal(...parts: (string | false | null | undefined)[]) {
+  return parts.filter(Boolean).join(" ");
 }
