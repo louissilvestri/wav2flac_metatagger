@@ -209,6 +209,36 @@ def job_events(job_id: str):
                              headers={"Cache-Control": "no-cache"})
 
 
+# ─── Metadata aggregation (Phase 2) ─────────────────────────────────────────────
+
+class IdentifyRequest(BaseModel):
+    artist: str = ""
+    album: str = ""
+    disc_id: str | None = None
+    track_count: int | None = None
+    file_paths: list[str] | None = None
+
+
+@app.post("/api/metadata/identify")
+def metadata_identify(req: IdentifyRequest):
+    """Multi-provider identification: returns one merged record with per-field
+    provenance, track listing, and ranked art candidates."""
+    from services.metadata.aggregator import identify
+    return identify(
+        artist=req.artist, album=req.album, disc_id=req.disc_id,
+        track_count=req.track_count, file_paths=req.file_paths,
+    )
+
+
+@app.get("/api/metadata/fingerprint-status")
+def fingerprint_status():
+    from services.metadata.providers import acoustid
+    return {
+        "available": acoustid.is_available(),
+        "fpcalc": acoustid.find_fpcalc(),
+    }
+
+
 # ─── History / Dashboard ────────────────────────────────────────────────────────
 
 @app.get("/api/history")
