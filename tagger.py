@@ -100,7 +100,11 @@ def embed_metadata(flac_path: str, metadata: dict, album_art: bytes = None) -> d
             pass  # Non-fatal: metadata still written even if art fails
 
     try:
-        audio.save()
+        # deleteid3=True strips any ID3 tag prepended before the 'fLaC' marker.
+        # Such tags (left by some rippers) make the file non-spec: Windows
+        # Explorer and Plex refuse to read it, showing no tags or art even
+        # though the Vorbis comments are intact. Always emit a clean FLAC.
+        audio.save(deleteid3=True)
         return {"success": True, "error": None, "fields_written": fields_written}
     except Exception as e:
         return {"success": False, "error": f"Failed to save tags: {e}", "fields_written": 0}
