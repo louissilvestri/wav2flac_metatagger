@@ -13,7 +13,20 @@ from database import log_conversion, update_conversion
 from encoder import encode_to_flac, get_wav_info
 from tagger import embed_metadata, build_metadata_from_release
 from file_manager import build_output_path, copy_to_network, cleanup_source_files
-from services.art import select_best_art
+from services.art import select_best_art, prepare_art
+
+
+def _download_art(url: str, max_size: int, quality: int) -> bytes | None:
+    """Download a user-selected art URL and prepare it for embedding."""
+    import requests
+    try:
+        resp = requests.get(url, timeout=30, headers={
+            "User-Agent": "MusicManager/2.0 (louissilvestri@hotmail.com)"})
+        if resp.status_code != 200:
+            return None
+        return prepare_art(resp.content, max_size, quality)
+    except Exception:
+        return None
 
 
 def run_conversion(
@@ -37,16 +50,24 @@ def run_conversion(
         on_progress({"status": "error", "error": "Output folder not configured"})
         return {"completed": 0, "failed": 0, "cancelled": False, "total": len(files)}
 
-    # Fetch album art once: compare all sources, pick highest resolution
+    # Fetch album art once. If the user picked a specific image in the UI
+    # (options.art_url), honor it; otherwise compare all sources and pick
+    # the highest resolution.
     album_art = None
     if settings.get("embed_album_art"):
-        art_result = select_best_art(
-            release_id=release_details.get("id") if release_details else None,
-            folder=settings.get("input_folder", ""),
-            max_size=settings.get("art_max_size", 1200),
-            quality=settings.get("art_quality", 90),
-        )
-        album_art = art_result.get("bytes")
+        art_url = settings.get("art_url", "")
+        if art_url:
+            album_art = _download_art(art_url,
+                                      settings.get("art_max_size", 1200),
+                                      settings.get("art_quality", 90))
+        if album_art is None:
+            art_result = select_best_art(
+                release_id=release_details.get("id") if release_details else None,
+                folder=settings.get("input_folder", ""),
+                max_size=settings.get("art_max_size", 1200),
+                quality=settings.get("art_quality", 90),
+            )
+            album_art = art_result.get("bytes")
 
     total = len(files)
     completed = 0

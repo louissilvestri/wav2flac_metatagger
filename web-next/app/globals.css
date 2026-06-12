@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+/* ── Cyan Command tokens (from C:\Claude\design-preview\style-guide.html) ── */
+@theme {
+  --color-bg: #0a0e12;
+  --color-surface: #11161d;
+  --color-surface-2: #161d26;
+  --color-text: #e6edf3;
+  --color-muted: #8b98a5;
+  --color-accent: #22d3ee;
+  --color-accent-2: #f6a609;
+  --color-alert: #ff5247;
+  --color-ok: #3ad08a;
+
+  --font-display: var(--font-audiowide), sans-serif;
+  --font-body: var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), monospace;
+
+  --ease-command: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root {
+  --glow: 0 0 0.35rem;
+  --dur: 240ms;
+  --chamfer: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  line-height: 1.55;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ── Signature utilities ── */
+
+.chamfer {
+  clip-path: var(--chamfer);
+}
+
+.glow-accent {
+  text-shadow: var(--glow) var(--color-accent);
+}
+
+.glow-amber {
+  text-shadow: var(--glow) var(--color-accent-2);
+}
+
+.box-glow {
+  box-shadow: var(--glow) var(--color-accent);
+}
+
+.box-glow-ok {
+  box-shadow: 0 0 0.4rem var(--color-ok);
+}
+
+.font-display {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Blinking terminal cursor */
+.cursor-blink {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  vertical-align: -2px;
+  background: var(--color-accent);
+  animation: blink 1s steps(2) infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* Subtle scanline sweep for panel titles (decorative) */
+@keyframes sweep {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-accent) 35%, transparent);
+}
+
+/* Scrollbars in theme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--color-accent) 30%, transparent) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  .cursor-blink { animation: none; }
+}

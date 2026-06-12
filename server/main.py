@@ -217,16 +217,50 @@ class IdentifyRequest(BaseModel):
     disc_id: str | None = None
     track_count: int | None = None
     file_paths: list[str] | None = None
+    folder_path: str | None = None  # CUE folder: server derives disc_id/artist/album
 
 
 @app.post("/api/metadata/identify")
 def metadata_identify(req: IdentifyRequest):
     """Multi-provider identification: returns one merged record with per-field
-    provenance, track listing, and ranked art candidates."""
+    provenance, track listing, and ranked art candidates.
+
+    Pass folder_path for a rip folder: the disc ID, artist/album hints, and
+    fingerprintable file list are derived from the CUE + WAVs automatically.
+    """
     from services.metadata.aggregator import identify
+
+    artist, album = req.artist, req.album
+    disc_id, track_count = req.disc_id, req.track_count
+    file_paths = req.file_paths
+
+    if req.folder_path:
+        from cue_parser import (
+            parse_cue_file, find_cue_file, cue_to_metadata,
+            calculate_musicbrainz_discid, get_leadout_from_cue_and_wavs,
+        )
+        from file_manager import scan_wav_files
+
+        cue_path = find_cue_file(req.folder_path)
+        if cue_path:
+            try:
+                cue_data = parse_cue_file(cue_path)
+                cue_meta = cue_to_metadata(cue_data)
+                artist = artist or cue_meta["album"].get("artist", "")
+                album = album or cue_meta["album"].get("album", "")
+                track_count = track_count or cue_meta["track_count"]
+                leadout = get_leadout_from_cue_and_wavs(cue_data, req.folder_path)
+                if leadout and not disc_id:
+                    disc_id = calculate_musicbrainz_discid(
+                        cue_data, leadout, cue_folder=req.folder_path)
+            except Exception:
+                pass
+        if not file_paths:
+            file_paths = [f["path"] for f in scan_wav_files(req.folder_path)]
+
     return identify(
-        artist=req.artist, album=req.album, disc_id=req.disc_id,
-        track_count=req.track_count, file_paths=req.file_paths,
+        artist=artist, album=album, disc_id=disc_id,
+        track_count=track_count, file_paths=file_paths,
     )
 
 
@@ -323,13 +357,38 @@ class BatchReassignRequest(BaseModel):
     tracks: list[dict]
     album_metadata: dict
     art_release_id: str | None = None
+    art_url: str | None = None
 
 
 @app.post("/api/library/batch-reassign")
 def library_batch_reassign(req: BatchReassignRequest):
     output_folder = load_settings().get("output_folder", "")
     return library_service.batch_reassign_album(
-        req.tracks, req.album_metadata, output_folder, req.art_release_id)
+        req.tracks, req.album_metadata, output_folder, req.art_release_id,
+        art_url=req.art_url)
+
+
+class BrowseRequest(BaseModel):
+    kind: str = "folder"
+
+
+@app.post("/api/settings/browse-dialog")
+def browse_dialog(req: BrowseRequest):
+    """Native folder/file picker — valid because the server runs on the
+    user's own desktop session."""
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    if req.kind == "exe":
+        path = filedialog.askopenfilename(
+            title="Select flac.exe",
+            filetypes=[("Executable", "*.exe"), ("All files", "*.*")])
+    else:
+        path = filedialog.askdirectory(title="Select Folder")
+    root.destroy()
+    return {"path": path or ""}
 
 
 # ─── Static frontend (Phase 3: Next.js export) ──────────────────────────────────

@@ -83,20 +83,26 @@ def reassign_track_with_art(flac_path: str, new_metadata: dict,
 def batch_reassign_album(tracks: list[dict], album_metadata: dict,
                          output_folder: str,
                          art_release_id: str | None = None,
-                         settings: dict | None = None) -> dict:
+                         settings: dict | None = None,
+                         art_url: str | None = None) -> dict:
     """Re-tag and move multiple FLAC files at once (Quick Clean Up).
 
-    art_release_id semantics:
-      None       = keep existing art (don't touch)
-      "__none__" = explicitly skip artwork
-      otherwise  = fetch art from this release ID once for all tracks
+    Art selection:
+      art_url set          = download that specific image (user-picked in UI)
+      art_release_id None  = keep existing art (don't touch)
+      "__none__"           = explicitly skip artwork
+      otherwise            = fetch art from this release ID once for all tracks
     """
     from library_manager import reassign_track
 
     settings = settings or load_settings()
 
     album_art = None
-    if art_release_id != "__none__":
+    if art_url:
+        from services.conversion import _download_art
+        album_art = _download_art(art_url, settings.get("art_max_size", 1200),
+                                  settings.get("art_quality", 90))
+    elif art_release_id != "__none__":
         fetch_release_id = art_release_id or album_metadata.get("musicbrainz_albumid", "")
         if fetch_release_id and settings.get("embed_album_art", True):
             album_art = fetch_art_for_provider(fetch_release_id, settings)

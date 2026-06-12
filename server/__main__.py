@@ -1,12 +1,17 @@
-"""Launcher: `python -m server` starts the v2 API.
+"""Launcher: `python -m server` starts the v2 API + UI.
+`python -m server --open` also opens the desktop app window (Edge app mode).
 
 Replaces a stale instance if one is already bound to the port: the old
 server's /api/shutdown is called, then we take over. This kills the
 "restarted the app but old code is still running" failure mode.
 """
 
+import os
+import subprocess
 import sys
+import threading
 import time
+import webbrowser
 
 import httpx
 import uvicorn
@@ -14,6 +19,23 @@ import uvicorn
 from config import APP_VERSION
 
 PORT = 8178
+
+
+def _open_app_window():
+    """Open the UI in a chromeless browser app window after the server binds."""
+    url = f"http://127.0.0.1:{PORT}/"
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%LocalAppData%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+    ]
+    time.sleep(1.5)
+    for exe in candidates:
+        if os.path.exists(exe):
+            subprocess.Popen([exe, f"--app={url}", "--disable-extensions"])
+            return
+    webbrowser.open(url)
 
 
 def _replace_stale_instance():
@@ -41,5 +63,7 @@ def _replace_stale_instance():
 
 if __name__ == "__main__":
     _replace_stale_instance()
-    print(f"Music Manager v{APP_VERSION} API on http://127.0.0.1:{PORT}")
+    if "--open" in sys.argv:
+        threading.Thread(target=_open_app_window, daemon=True).start()
+    print(f"Music Manager v{APP_VERSION} on http://127.0.0.1:{PORT}")
     uvicorn.run("server.main:app", host="127.0.0.1", port=PORT, log_level="warning")
