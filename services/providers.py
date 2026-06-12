@@ -37,11 +37,13 @@ def search_releases(artist=None, album=None, track_count=None, settings=None) ->
 
 
 def get_release(release_id: str, settings=None) -> dict:
-    """Get full release details (track listing etc.) from the active provider."""
-    settings = settings or load_settings()
-    provider = settings.get("metadata_provider", "musicbrainz")
+    """Get full release details (track listing etc.), routing by the ID's OWN
+    shape — Discogs IDs are integers, MusicBrainz IDs are UUIDs. Routing by a
+    global setting breaks cross-provider lookups (e.g. a MusicBrainz original-
+    album candidate fetched while the provider setting says 'discogs')."""
+    from services.art import is_discogs_id
 
-    if provider == "discogs":
+    if is_discogs_id(release_id):
         from discogs_lookup import get_release_details as discogs_details
         return discogs_details(release_id)
     else:

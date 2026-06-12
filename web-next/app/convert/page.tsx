@@ -377,19 +377,26 @@ function ConvertStep() {
       else if (artChoiceId?.startsWith("url:")) options.art_url = artChoiceId.slice(4);
       if (scan?.folder) options.input_folder = scan.folder;
 
-      // Multi-disc mapping: when the identified release spans multiple discs
-      // and file count matches total tracks, files map onto the release's
-      // (disc, position) sequence instead of all landing on disc 1
+      // Order files: by parsed track number when usable, otherwise the
+      // filename order scan_wav_files already produced. (Note: || not ?? —
+      // a parsed number of 0 means "unparsed" and must fall back.)
+      const ordered = wizardFiles
+        .map((f, i) => ({ f, key: (f.parsed_track_number as number) || (i + 1) }))
+        .sort((a, b) => a.key - b.key)
+        .map((x) => x.f);
+
+      // The release track list is authoritative for ordering: when its track
+      // count matches the file count, file[i] → track[i]. This is robust to
+      // unparseable filenames (the original "Track 00" overwrite bug).
       const flat = (r?.tracks ?? []).slice()
         .sort((a, b) => (a.disc_number - b.disc_number) || (a.position - b.position));
-      const multiDisc = flat.some((t) => (t.disc_number || 1) > 1);
-      const mapByIndex = multiDisc && flat.length === wizardFiles.length;
+      const alignByIndex = flat.length > 0 && flat.length === ordered.length;
 
       return api.startConvert({
-        files: wizardFiles.map((f, i) => ({
+        files: ordered.map((f, i) => ({
           path: f.path,
-          track_number: mapByIndex ? flat[i].position : (f.parsed_track_number ?? i + 1),
-          disc_number: mapByIndex ? (flat[i].disc_number || 1) : 1,
+          track_number: alignByIndex ? flat[i].position : ((f.parsed_track_number as number) || i + 1),
+          disc_number: alignByIndex ? (flat[i].disc_number || 1) : 1,
           parsed_title: f.parsed_title,
           parsed_artist: f.parsed_artist,
           parsed_album: f.parsed_album,

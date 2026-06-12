@@ -186,10 +186,11 @@ def scan_wav_files(folder: str) -> list[dict]:
             except ValueError:
                 info["parsed_title"] = stem
         else:
-            match = re.match(r"^(\d+)\s*[-._]\s*(.+)$", stem)
+            # "NN - Title", "NN. Title", "NN_Title", or "NN Title" (space only)
+            match = re.match(r"^(\d+)[\s\-._]+(.+)$", stem)
             if match:
                 info["parsed_track_number"] = int(match.group(1))
-                info["parsed_title"] = match.group(2)
+                info["parsed_title"] = match.group(2).strip()
             else:
                 info["parsed_title"] = stem
 

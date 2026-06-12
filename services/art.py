@@ -115,17 +115,23 @@ def select_best_art(
     """
     candidates = []
 
-    # Source 1: Cover Art Archive
+    # Source 1: the release's provider art (routed by ID shape)
     if release_id:
-        from metadata_lookup import get_cover_art
-        caa_raw = get_cover_art(release_id, max_size=9999, quality=95)
-        if caa_raw:
-            w, h = get_image_resolution(caa_raw)
+        if is_discogs_id(release_id):
+            from discogs_lookup import get_cover_art as discogs_art
+            raw = discogs_art(release_id, max_size=9999, quality=95)
+            source = "discogs"
+        else:
+            from metadata_lookup import get_cover_art
+            raw = get_cover_art(release_id, max_size=9999, quality=95)
+            source = "coverartarchive"
+        if raw:
+            w, h = get_image_resolution(raw)
             candidates.append({
-                "source": "coverartarchive",
+                "source": source,
                 "width": w, "height": h,
                 "pixels": w * h,
-                "raw": caa_raw,
+                "raw": raw,
             })
 
     # Source 2: Local folder (EAC art)
@@ -183,17 +189,23 @@ def _pick_best(candidates: list[dict], max_size: int, quality: int) -> dict:
     }
 
 
+def is_discogs_id(release_id: str) -> bool:
+    """Discogs release IDs are integers; MusicBrainz IDs are UUIDs."""
+    return bool(release_id) and str(release_id).strip().isdigit()
+
+
 def fetch_art_for_provider(release_id: str, settings: dict | None = None) -> bytes | None:
-    """Fetch album art using the active metadata provider.
+    """Fetch album art for a release ID, routing by the ID's OWN shape —
+    never by the legacy metadata_provider setting. (A MusicBrainz UUID sent
+    to Discogs fails silently and tracks end up with no art at all.)
 
     Returns prepared JPEG bytes ready for embedding, or None.
     """
     settings = settings or load_settings()
-    provider = settings.get("metadata_provider", "musicbrainz")
     max_size = settings.get("art_max_size", 1200)
     quality = settings.get("art_quality", 90)
 
-    if provider == "discogs":
+    if is_discogs_id(release_id):
         from discogs_lookup import get_cover_art as discogs_art
         return discogs_art(release_id, max_size=max_size, quality=quality)
     else:
@@ -206,38 +218,18 @@ def fetch_art_for_provider(release_id: str, settings: dict | None = None) -> byt
 
 def fetch_album_art_compared(release_id: str, folder: str | None,
                              settings: dict | None = None) -> dict:
-    """Provider-aware art comparison for the UI (Convert tab / Quick Clean Up).
+    """Art comparison for the UI (Convert tab / Quick Clean Up).
 
-    Returns {success, data, source, width, height, candidates} where every
-    candidate includes a 200px thumb.
+    select_best_art routes the release ID by its own shape (Discogs vs CAA)
+    and also pulls local EAC art from `folder`, returning every candidate with
+    a 200px thumb. Returns {success, data, source, width, height, candidates}.
     """
     settings = settings or load_settings()
-    provider = settings.get("metadata_provider", "musicbrainz")
-    max_size = settings.get("art_max_size", 1200)
-    quality = settings.get("art_quality", 90)
-
-    if provider == "discogs":
-        from discogs_lookup import get_cover_art as discogs_art
-        candidates = []
-
-        discogs_raw = discogs_art(release_id, max_size=9999, quality=95)
-        if discogs_raw:
-            w, h = get_image_resolution(discogs_raw)
-            candidates.append({"source": "discogs", "width": w, "height": h,
-                               "pixels": w * h, "raw": discogs_raw})
-
-        if folder:
-            local_raw, _ = find_local_art_raw(folder)
-            if local_raw:
-                w, h = get_image_resolution(local_raw)
-                candidates.append({"source": "local", "width": w, "height": h,
-                                   "pixels": w * h, "raw": local_raw})
-
-        result = _pick_best(candidates, max_size, quality)
-    else:
-        result = select_best_art(release_id=release_id, folder=folder,
-                                 max_size=max_size, quality=quality)
-
+    result = select_best_art(
+        release_id=release_id, folder=folder,
+        max_size=settings.get("art_max_size", 1200),
+        quality=settings.get("art_quality", 90),
+    )
     return {
         "success": result["data"] is not None,
         "data": result["data"],

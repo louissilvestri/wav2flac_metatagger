@@ -81,8 +81,11 @@ def run_conversion(
             break
 
         wav_path = file_info["path"]
-        track_number = file_info.get("track_number", idx + 1)
-        disc_number = file_info.get("disc_number", 1)
+        # Safety net: a 0/missing track number must never collapse every file
+        # onto "00 - Track 00.flac" and overwrite each other. Fall back to the
+        # 1-based position in the batch.
+        track_number = file_info.get("track_number") or (idx + 1)
+        disc_number = file_info.get("disc_number") or 1
 
         on_progress({
             "status": "encoding",
@@ -142,9 +145,11 @@ def run_conversion(
         )
 
         # Remove any existing track with the same number but different title
-        # (prevents duplicates when re-ripping with a different metadata source)
+        # (prevents duplicates when re-ripping with a different metadata source).
+        # Guarded by track_number > 0 so a degenerate batch can never chain-
+        # delete every previous track via a shared "00 - " prefix.
         dest_folder = dest_path.parent
-        if dest_folder.exists():
+        if dest_folder.exists() and track_number > 0:
             track_prefix = f"{track_number:02d} - "
             for existing in dest_folder.glob(f"{track_prefix}*.flac"):
                 if existing.name != dest_path.name:
