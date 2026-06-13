@@ -42,11 +42,12 @@ def search_release(artist: str = None, album: str = None, tracks: int = None) ->
     _rate_limit()
 
     try:
+        from text_utils import normalize_punctuation
         kwargs = {"type": "release"}
         if artist:
-            kwargs["artist"] = artist
+            kwargs["artist"] = normalize_punctuation(artist)
         if album:
-            kwargs["release_title"] = album
+            kwargs["release_title"] = normalize_punctuation(album)
 
         results = client.search(**kwargs)
 

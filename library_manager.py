@@ -306,9 +306,10 @@ def find_original_album(artist: str, title: str) -> list[dict]:
     init_musicbrainz()
     _rate_limit()
 
+    from text_utils import lucene_phrase
     try:
         result = musicbrainzngs.search_recordings(
-            query=f'artist:"{artist}" AND recording:"{title}"',
+            query=f'artist:"{lucene_phrase(artist)}" AND recording:"{lucene_phrase(title)}"',
             limit=100,
         )
     except Exception:
@@ -380,11 +381,12 @@ def find_original_album_by_name(artist: str, album_name: str) -> list[dict]:
     init_musicbrainz()
     _rate_limit()
 
+    from text_utils import lucene_phrase
     query_parts = []
     if artist:
-        query_parts.append(f'artist:"{artist}"')
+        query_parts.append(f'artist:"{lucene_phrase(artist)}"')
     if album_name:
-        query_parts.append(f'release:"{album_name}"')
+        query_parts.append(f'release:"{lucene_phrase(album_name)}"')
     query = " AND ".join(query_parts)
 
     try:

@@ -8,6 +8,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, LibraryAlbum, LibraryFile, LibraryScan, IdentifyResult, AlbumCandidate, FieldValue } from "@/lib/api";
+import { foldForCompare, normalizeArtistForSearch } from "@/lib/text";
 import { Panel, Button, Input, Field, StatCard, Spinner, Tag, Dialog, Terminal, TermLine, cx } from "@/components/ui";
 import { MetadataCompare, CompareRow, Choices, defaultChoices, asText } from "@/components/MetadataCompare";
 import { ArtPicker, ArtOption } from "@/components/ArtPicker";
@@ -28,12 +29,13 @@ export default function LibraryPage() {
   const data = scan.data;
   const albums = useMemo(() => {
     if (!data?.albums) return [];
-    const q = search.toLowerCase().trim();
+    const q = foldForCompare(search);
     return data.albums.filter((a) => {
       if (filter === "compilations" && !a.is_compilation) return false;
       if (filter === "incomplete" && a.avg_completeness >= 100) return false;
       if (q) {
-        const hay = `${a.albumartist} ${a.album} ${a.files.map((f) => f.title).join(" ")}`.toLowerCase();
+        const hay = foldForCompare(
+          `${a.albumartist} ${a.album} ${a.files.map((f) => f.title).join(" ")}`);
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -476,7 +478,7 @@ function TrackAutoCleanup({ file, onDone }: { file: LibraryFile; onDone: () => v
 
   const identify = useMutation({
     mutationFn: () => api.identify({
-      artist: normalizeArtist(file.artist || file.albumartist),
+      artist: normalizeArtistForSearch(file.artist || file.albumartist),
       album: file.album,
       file_paths: [file.path],
     }),
@@ -583,7 +585,7 @@ function buildTrackRows(r: IdentifyResult, file: LibraryFile): CompareRow[] {
  * "Likely Original" badge, then a per-field diff preview before applying. */
 function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void }) {
   const qc = useQueryClient();
-  const [artist, setArtist] = useState(normalizeArtist(file.artist));
+  const [artist, setArtist] = useState(normalizeArtistForSearch(file.artist));
   const [title, setTitle] = useState(file.title);
   const [selected, setSelected] = useState<AlbumCandidate | null>(null);
   const [metadata, setMetadata] = useState<Record<string, string> | null>(null);
@@ -745,12 +747,4 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
       )}
     </div>
   );
-}
-
-/** "English Beat, The" → "The English Beat"; Various Artists → "" */
-function normalizeArtist(artist: string): string {
-  if (!artist) return "";
-  if (["various artists", "various"].includes(artist.toLowerCase().trim())) return "";
-  const m = artist.match(/^(.+),\s*(The|A|An|Les|La|Le|El|Los|Las|Die|Das|Der)$/i);
-  return m ? `${m[2]} ${m[1]}` : artist;
 }

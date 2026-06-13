@@ -50,11 +50,13 @@ def search_release(artist: str = None, album: str = None, tracks: int = None, ba
     init_musicbrainz()
     _rate_limit()
 
+    from text_utils import lucene_phrase
+
     query_parts = []
     if artist:
-        query_parts.append(f'artist:"{artist}"')
+        query_parts.append(f'artist:"{lucene_phrase(artist)}"')
     if album:
-        query_parts.append(f'release:"{album}"')
+        query_parts.append(f'release:"{lucene_phrase(album)}"')
     if barcode:
         query_parts.append(f"barcode:{barcode}")
 
