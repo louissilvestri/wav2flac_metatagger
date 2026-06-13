@@ -41,19 +41,31 @@ DEFAULT_SETTINGS = {
 }
 
 
-# Plex-supported Vorbis Comment fields for completeness scoring
+# Fields that contribute to a track's completeness score.
+#
+# Completeness measures whether a track is well-tagged for Plex — NOT whether
+# it carries any one provider's internal IDs. With multi-source metadata
+# (MusicBrainz, Discogs, Last.fm, iTunes…), requiring MusicBrainz-specific
+# artist IDs wrongly caps fully-tagged albums below 100%.
 PLEX_DISPLAY_FIELDS = [
     "TITLE", "ARTIST", "ALBUMARTIST", "ALBUM",
     "TRACKNUMBER", "DISCNUMBER", "DATE", "GENRE",
 ]
-PLEX_MATCH_FIELDS = [
-    "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_ARTISTID",
-    "MUSICBRAINZ_TRACKID", "MUSICBRAINZ_ALBUMARTISTID",
-]
 PLEX_OPTIONAL_FIELDS = [
     "TRACKTOTAL", "DISCTOTAL",
 ]
-PLEX_ALL_FIELDS = PLEX_DISPLAY_FIELDS + PLEX_MATCH_FIELDS + PLEX_OPTIONAL_FIELDS
+# A single, source-agnostic "is this track matchable?" credit: satisfied when
+# ANY of these external identifiers is present (any provider counts).
+PLEX_IDENTIFIER_FIELDS = [
+    "MUSICBRAINZ_ALBUMID", "MUSICBRAINZ_RELEASEGROUPID", "MUSICBRAINZ_TRACKID",
+    "DISCOGS_ALBUMID", "DISCOGS_RELEASEID",
+]
+
+# Scored slots: each display + each optional + cover art + one identifier credit
+PLEX_SCORED_SLOTS = len(PLEX_DISPLAY_FIELDS) + len(PLEX_OPTIONAL_FIELDS) + 2
+
+# Backwards-compat alias (older references expect a flat field list)
+PLEX_ALL_FIELDS = PLEX_DISPLAY_FIELDS + PLEX_OPTIONAL_FIELDS
 
 
 def ensure_config_dir():

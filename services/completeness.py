@@ -1,42 +1,59 @@
-"""Plex metadata completeness scoring. Moved from app.py (Phase 1)."""
+"""Plex metadata completeness scoring — the single source of truth.
+
+Both the library scan (library_manager) and the conversion preview use this
+one function, so the two can never disagree (they used to: a conversion would
+report 100% while the library reported 87% for the same album).
+"""
 
 from config import (
-    PLEX_DISPLAY_FIELDS, PLEX_MATCH_FIELDS, PLEX_OPTIONAL_FIELDS, PLEX_ALL_FIELDS,
+    PLEX_DISPLAY_FIELDS, PLEX_OPTIONAL_FIELDS, PLEX_IDENTIFIER_FIELDS,
 )
 from tagger import build_metadata_from_release
 
 
 def calculate_metadata_completeness(metadata: dict, has_art: bool = False) -> dict:
-    """Calculate metadata completeness percentage based on Plex-supported fields.
+    """Score how well-tagged a track is, source-agnostically.
 
+    Slots: each display field, each optional field, cover art, and ONE
+    "identifier" credit satisfied by any external ID (MusicBrainz OR Discogs).
     Returns: {percentage, filled, total, fields: {name: {status, category}}, has_art}
     """
+    meta_upper = {k.upper(): v for k, v in metadata.items()}
+
+    def present(field: str) -> bool:
+        val = meta_upper.get(field, "")
+        return bool(val and str(val).strip())
+
     fields = {}
     filled = 0
     total = 0
 
-    meta_upper = {k.upper(): v for k, v in metadata.items()}
-
     for field_list, category in (
         (PLEX_DISPLAY_FIELDS, "display"),
-        (PLEX_MATCH_FIELDS, "match"),
         (PLEX_OPTIONAL_FIELDS, "optional"),
     ):
         for field in field_list:
             total += 1
-            val = meta_upper.get(field, "")
-            is_filled = bool(val and str(val).strip())
+            is_filled = present(field)
             if is_filled:
                 filled += 1
             fields[field] = {"status": "filled" if is_filled else "missing",
                              "category": category}
 
-    # Album art counts as a field
+    # Album art
     total += 1
     if has_art:
         filled += 1
     fields["COVER_ART"] = {"status": "filled" if has_art else "missing",
                            "category": "display"}
+
+    # One identifier credit — satisfied by ANY provider's album/track ID
+    total += 1
+    has_identifier = any(present(f) for f in PLEX_IDENTIFIER_FIELDS)
+    if has_identifier:
+        filled += 1
+    fields["IDENTIFIER"] = {"status": "filled" if has_identifier else "missing",
+                            "category": "match"}
 
     return {
         "percentage": round((filled / total) * 100) if total > 0 else 0,
@@ -100,8 +117,9 @@ def compute_album_completeness(release_details: dict | None,
 
     avg_pct = round(sum(t["percentage"] for t in tracks_result) / len(tracks_result)) if tracks_result else 0
 
+    from config import PLEX_SCORED_SLOTS
     return {
         "tracks": tracks_result,
         "album_average": avg_pct,
-        "plex_field_count": len(PLEX_ALL_FIELDS) + 1,  # +1 for cover art
+        "plex_field_count": PLEX_SCORED_SLOTS,
     }

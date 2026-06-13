@@ -1,44 +1,69 @@
-"""Characterization tests for Plex metadata completeness scoring (app.py)."""
+"""Completeness scoring — source-agnostic (12 slots).
+
+8 display + 2 optional + cover art + 1 identifier credit (any provider ID).
+Pins the fix for: a fully-tagged album scoring 87% because it lacked
+MusicBrainz-specific artist IDs even though it was tagged from other sources.
+"""
 
 from app import calculate_metadata_completeness
-from config import PLEX_ALL_FIELDS
+from config import PLEX_SCORED_SLOTS
 
 FULL_META = {
     "TITLE": "Test", "ARTIST": "Artist", "ALBUMARTIST": "Artist",
     "ALBUM": "Album", "TRACKNUMBER": "1", "DISCNUMBER": "1",
     "DATE": "2024", "GENRE": "Rock",
-    "MUSICBRAINZ_ALBUMID": "abc", "MUSICBRAINZ_ARTISTID": "def",
-    "MUSICBRAINZ_TRACKID": "ghi", "MUSICBRAINZ_ALBUMARTISTID": "jkl",
+    "MUSICBRAINZ_ALBUMID": "abc",   # one identifier is enough
     "TRACKTOTAL": "10", "DISCTOTAL": "1",
 }
 
 
-def test_field_count():
-    # 14 tag fields + 1 for cover art
-    assert len(PLEX_ALL_FIELDS) == 14
+def test_slot_count():
+    # 8 display + 2 optional + cover art + identifier
+    assert PLEX_SCORED_SLOTS == 12
 
 
 def test_full_metadata_with_art_is_100():
     result = calculate_metadata_completeness(FULL_META, has_art=True)
     assert result["percentage"] == 100
-    assert result["filled"] == result["total"] == 15
+    assert result["filled"] == result["total"] == 12
 
 
-def test_full_metadata_without_art():
-    result = calculate_metadata_completeness(FULL_META, has_art=False)
-    assert result["filled"] == 14
-    assert result["percentage"] == 93  # round(14/15*100)
+def test_artist_ids_not_required():
+    """REGRESSION: the Beauty and the Beat case — full display tags, art,
+    totals, and a MusicBrainz ALBUM id, but NO MusicBrainz artist IDs. Must
+    be 100%, not 87%."""
+    meta = dict(FULL_META)  # has MUSICBRAINZ_ALBUMID, no ARTISTID/ALBUMARTISTID
+    result = calculate_metadata_completeness(meta, has_art=True)
+    assert result["percentage"] == 100
 
 
-def test_partial_metadata_pinned():
+def test_discogs_id_satisfies_identifier():
+    """An album tagged from Discogs (no MusicBrainz IDs) still gets the
+    identifier credit."""
+    meta = {k: v for k, v in FULL_META.items() if not k.startswith("MUSICBRAINZ")}
+    meta["DISCOGS_ALBUMID"] = "12345"
+    result = calculate_metadata_completeness(meta, has_art=True)
+    assert result["fields"]["IDENTIFIER"]["status"] == "filled"
+    assert result["percentage"] == 100
+
+
+def test_no_identifier_costs_one_slot():
+    meta = {k: v for k, v in FULL_META.items() if not k.startswith("MUSICBRAINZ")}
+    result = calculate_metadata_completeness(meta, has_art=True)
+    assert result["fields"]["IDENTIFIER"]["status"] == "missing"
+    assert result["filled"] == 11
+    assert result["percentage"] == 92  # round(11/12*100)
+
+
+def test_partial_metadata():
     partial = {"TITLE": "T", "ARTIST": "A", "ALBUM": "L", "TRACKNUMBER": "1"}
     result = calculate_metadata_completeness(partial, has_art=False)
     assert result["filled"] == 4
-    assert result["total"] == 15
-    assert result["percentage"] == 27
+    assert result["total"] == 12
+    assert result["percentage"] == 33  # round(4/12*100)
 
 
-def test_art_counts_as_field():
+def test_art_counts_as_slot():
     result = calculate_metadata_completeness({}, has_art=True)
     assert result["filled"] == 1
     assert result["fields"]["COVER_ART"]["status"] == "filled"

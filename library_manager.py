@@ -3,7 +3,6 @@
 import shutil
 from pathlib import Path
 
-from config import PLEX_DISPLAY_FIELDS, PLEX_MATCH_FIELDS, PLEX_ALL_FIELDS
 from tagger import read_metadata
 from file_manager import sanitize_filename, find_existing_folder, _normalize_for_compare
 
@@ -19,29 +18,10 @@ _SKIP_SECONDARY = {"Compilation", "Live", "DJ-mix", "Remix", "Soundtrack",
 
 
 def _calculate_completeness(tags: dict, has_art: bool) -> dict:
-    """Calculate metadata completeness for Plex-supported fields."""
-    filled = 0
-    total = len(PLEX_ALL_FIELDS) + 1  # +1 for cover art
-    fields = {}
-
-    for field in PLEX_ALL_FIELDS:
-        val = tags.get(field, "")
-        is_filled = bool(val and str(val).strip())
-        if is_filled:
-            filled += 1
-        cat = "display" if field in PLEX_DISPLAY_FIELDS else "match" if field in PLEX_MATCH_FIELDS else "optional"
-        fields[field] = {"status": "filled" if is_filled else "missing", "category": cat}
-
-    if has_art:
-        filled += 1
-    fields["COVER_ART"] = {"status": "filled" if has_art else "missing", "category": "display"}
-
-    return {
-        "percentage": round(filled / total * 100) if total > 0 else 0,
-        "filled": filled,
-        "total": total,
-        "fields": fields,
-    }
+    """Score a track's tags. Delegates to the single shared scorer so the
+    library view and the conversion preview always agree."""
+    from services.completeness import calculate_metadata_completeness
+    return calculate_metadata_completeness(tags, has_art=has_art)
 
 
 # Keywords that indicate a compilation/greatest-hits album.

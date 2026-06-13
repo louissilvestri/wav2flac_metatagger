@@ -45,7 +45,7 @@ def test_completeness_single_track():
     })
     assert r.status_code == 200
     body = r.json()
-    assert body["percentage"] == 27  # pinned in test_completeness.py
+    assert body["percentage"] == 33  # 4/12 slots; see test_completeness.py
     assert body["filled"] == 4
 
 
