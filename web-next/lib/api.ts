@@ -254,9 +254,16 @@ export const api = {
   findOriginalAlbum: (artist: string, title: string) =>
     get<AlbumCandidate[]>(`/api/library/original-album?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`),
   getRelease: (id: string) => get<ReleaseDetails>(`/api/releases/${id}`),
+  getReleaseArt: (id: string, folder?: string) =>
+    get<{ success: boolean; data?: string; source?: string; width?: number; height?: number }>(
+      `/api/releases/${id}/art${folder ? `?folder=${encodeURIComponent(folder)}` : ""}`),
   reassignTrack: (req: { path: string; metadata: Record<string, string>;
-                         move_file?: boolean; art_release_id?: string | null }) =>
+                         move_file?: boolean; art_release_id?: string | null;
+                         art_url?: string | null }) =>
     post<{ success: boolean; new_path: string; error?: string }>("/api/library/reassign", req),
+  localArt: (folder?: string) =>
+    get<{ success: boolean; data?: string; width?: number; height?: number; source_file?: string }>(
+      `/api/input/local-art${folder ? `?folder=${encodeURIComponent(folder)}` : ""}`),
   reassignPreview: (path: string, metadata: Record<string, string>) =>
     post<ReassignPreview>("/api/library/reassign/preview", { path, metadata }),
   deleteLibraryFile: (path: string) =>

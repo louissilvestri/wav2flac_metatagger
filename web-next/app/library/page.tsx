@@ -590,9 +590,27 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
   const [selected, setSelected] = useState<AlbumCandidate | null>(null);
   const [metadata, setMetadata] = useState<Record<string, string> | null>(null);
   const [included, setIncluded] = useState<Record<string, boolean>>({});
+  // Default to keeping whatever art is already embedded, per "embedded first".
+  const [artChoice, setArtChoice] = useState<string>(file.has_art ? "keep" : "release");
 
   const search = useMutation({
     mutationFn: () => api.findOriginalAlbum(artist, title),
+  });
+
+  // Thumbnail of the art already on this file (the "Current" / first option).
+  const embThumb = useQuery({
+    queryKey: ["embedded-art", file.path],
+    queryFn: () => api.embeddedArt(file.path),
+    enabled: file.has_art,
+    staleTime: Infinity,
+  });
+
+  // Thumbnail of the chosen album's art (only once a candidate is selected).
+  const relArt = useQuery({
+    queryKey: ["release-art", selected?.release_id],
+    queryFn: () => api.getReleaseArt(selected!.release_id),
+    enabled: !!selected?.release_id,
+    staleTime: Infinity,
   });
 
   const choose = useMutation({
@@ -644,7 +662,11 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
       }
       return api.reassignTrack({
         path: file.path, metadata: chosen, move_file: true,
-        art_release_id: selected?.release_id ?? null,
+        // keep = leave embedded art untouched; release = pull the chosen
+        // album's art; none = explicitly skip.
+        art_release_id: artChoice === "keep" ? "__keep__"
+          : artChoice === "none" ? "__none__"
+          : (selected?.release_id ?? "__keep__"),
       });
     },
     onSuccess: (res) => {
@@ -732,6 +754,36 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
               → {preview.new_path}
             </p>
           )}
+          <div>
+            <h4 className="font-display mb-1 text-xs text-accent-2">Album Art</h4>
+            <ArtPicker
+              options={[
+                ...(file.has_art ? [{
+                  id: "keep",
+                  label: "Current",
+                  sublabel: embThumb.data?.success
+                    ? `${embThumb.data.width}×${embThumb.data.height}`
+                    : "keep embedded art",
+                  thumbSrc: embThumb.data?.success && embThumb.data.data
+                    ? `data:image/jpeg;base64,${embThumb.data.data}`
+                    : undefined,
+                }] : []),
+                {
+                  id: "release",
+                  label: selected?.album || "From album",
+                  sublabel: relArt.data?.success
+                    ? `${relArt.data.width}×${relArt.data.height}`
+                    : "this album's art",
+                  thumbSrc: relArt.data?.success && relArt.data.data
+                    ? `data:image/jpeg;base64,${relArt.data.data}`
+                    : undefined,
+                },
+                { id: "none", label: "No Art", sublabel: "skip" },
+              ]}
+              selectedId={artChoice}
+              onSelect={setArtChoice}
+            />
+          </div>
           <div className="flex gap-2">
             <Button variant="solid" disabled={apply.isPending} onClick={() => apply.mutate()}>
               {apply.isPending ? "Applying…" : "Apply Reassign"}

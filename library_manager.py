@@ -289,6 +289,21 @@ def _filter_sort_candidates(all_candidates: dict, exclude_compilations: bool = T
     return candidates
 
 
+def _artist_loosely_matches(a: str, b: str) -> bool:
+    """True if two artist names plausibly refer to the same act, allowing for
+    regional name variants (e.g. "The Beat" vs "The English Beat")."""
+    from text_utils import fold_for_compare
+
+    def norm(s):
+        s = fold_for_compare(s)
+        return s[4:] if s.startswith("the ") else s
+
+    a, b = norm(a), norm(b)
+    if not a or not b:
+        return False
+    return a in b or b in a
+
+
 def find_original_album(artist: str, title: str) -> list[dict]:
     """Search MusicBrainz for the original studio album a track appeared on.
 
@@ -306,7 +321,7 @@ def find_original_album(artist: str, title: str) -> list[dict]:
     init_musicbrainz()
     _rate_limit()
 
-    from text_utils import lucene_phrase
+    from text_utils import lucene_phrase, fold_for_compare
     try:
         result = musicbrainzngs.search_recordings(
             query=f'artist:"{lucene_phrase(artist)}" AND recording:"{lucene_phrase(title)}"',
@@ -316,6 +331,33 @@ def find_original_album(artist: str, title: str) -> list[dict]:
         return []
 
     recordings = result.get("recording-list", [])
+
+    # Some bands are credited under regional name variants on individual
+    # releases (e.g. "The Beat" vs "The English Beat"), which a strict
+    # artist-field query may miss for some releases even when it matches
+    # others. Always also search by title alone and add any recordings whose
+    # artist credit loosely matches, so the studio release isn't dropped just
+    # because a different (e.g. live) release matched the strict query.
+    _rate_limit()
+    try:
+        title_only_result = musicbrainzngs.search_recordings(
+            query=f'recording:"{lucene_phrase(title)}"',
+            limit=100,
+        )
+    except Exception:
+        title_only_result = {}
+
+    seen_rec_ids = {rec.get("id") for rec in recordings}
+    for rec in title_only_result.get("recording-list", []):
+        if rec.get("id") in seen_rec_ids:
+            continue
+        if any(
+            _artist_loosely_matches(artist, ac.get("name", "") or ac.get("artist", {}).get("name", ""))
+            for ac in rec.get("artist-credit", []) if isinstance(ac, dict)
+        ):
+            recordings.append(rec)
+            seen_rec_ids.add(rec.get("id"))
+
     if not recordings:
         _cache_original_album[cache_key] = []
         return []
@@ -323,10 +365,10 @@ def find_original_album(artist: str, title: str) -> list[dict]:
     # Collect unique release groups from recording results
     seen_rg = set()
     all_candidates = {}
-    title_lower = title.lower().strip()
+    title_lower = fold_for_compare(title)
 
     for rec in recordings:
-        rec_title = rec.get("title", "").lower().strip()
+        rec_title = fold_for_compare(rec.get("title", ""))
         if title_lower not in rec_title and rec_title not in title_lower:
             continue
 

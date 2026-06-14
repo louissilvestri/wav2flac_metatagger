@@ -65,16 +65,28 @@ def delete_library_file(flac_path: str, output_folder: str) -> dict:
 def reassign_track_with_art(flac_path: str, new_metadata: dict,
                             output_folder: str, move_file: bool = True,
                             art_release_id: str | None = None,
-                            settings: dict | None = None) -> dict:
-    """Re-tag a FLAC file, fetch new album art, and move it."""
+                            settings: dict | None = None,
+                            art_url: str | None = None) -> dict:
+    """Re-tag a FLAC file, optionally fetch/replace album art, and move it.
+
+    Art selection (mirrors batch_reassign_album):
+      art_url set          = download that specific image (user-picked in UI)
+      "__keep__"/None      = keep existing embedded art (don't touch it)
+      "__none__"           = explicitly skip artwork (leaves any existing art)
+      otherwise            = fetch art from this release ID
+    """
     from library_manager import reassign_track
 
     settings = settings or load_settings()
 
     album_art = None
-    fetch_release_id = art_release_id or new_metadata.get("musicbrainz_albumid", "")
-    if fetch_release_id and settings.get("embed_album_art", True):
-        album_art = fetch_art_for_provider(fetch_release_id, settings)
+    if art_url:
+        from services.conversion import _download_art
+        album_art = _download_art(art_url, settings.get("art_max_size", 1200),
+                                  settings.get("art_quality", 90))
+    elif art_release_id not in (None, "__keep__", "__none__"):
+        if settings.get("embed_album_art", True):
+            album_art = fetch_art_for_provider(art_release_id, settings)
 
     return reassign_track(flac_path, new_metadata, output_folder, move_file,
                           album_art=album_art)

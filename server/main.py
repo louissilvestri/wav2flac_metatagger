@@ -92,6 +92,14 @@ def scan_input(req: ScanRequest):
     return input_scan.scan_input_folder(folder)
 
 
+@app.get("/api/input/local-art")
+def input_local_art(folder: str | None = None):
+    """Thumbnail of the rip folder's own EAC art, for the Convert art picker."""
+    from services.art import get_local_art_preview
+    search_folder = folder or load_settings().get("input_folder", "")
+    return get_local_art_preview(search_folder)
+
+
 @app.post("/api/lookup/automated")
 def automated_lookup(req: ScanRequest):
     if not req.folder_path:
@@ -349,13 +357,15 @@ class ReassignRequest(BaseModel):
     metadata: dict
     move_file: bool = True
     art_release_id: str | None = None
+    art_url: str | None = None
 
 
 @app.post("/api/library/reassign")
 def library_reassign(req: ReassignRequest):
     output_folder = load_settings().get("output_folder", "")
     return library_service.reassign_track_with_art(
-        req.path, req.metadata, output_folder, req.move_file, req.art_release_id)
+        req.path, req.metadata, output_folder, req.move_file, req.art_release_id,
+        art_url=req.art_url)
 
 
 class ReassignPreviewRequest(BaseModel):

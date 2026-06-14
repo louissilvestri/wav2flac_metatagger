@@ -240,6 +240,33 @@ def fetch_album_art_compared(release_id: str, folder: str | None,
     }
 
 
+def get_local_art_preview(folder: str) -> dict:
+    """Thumbnail of the local EAC art in a rip folder (folder.jpg/cover.jpg/…),
+    for the Convert art picker. Mirrors get_embedded_art's shape.
+
+    Returns: {success, data (base64), width, height, source_file} or {success: False}
+    """
+    raw, name = find_local_art_raw(folder)
+    if not raw:
+        return {"success": False}
+    try:
+        w, h = get_image_resolution(raw)
+        img = Image.open(BytesIO(raw))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+        output = BytesIO()
+        img.save(output, format="JPEG", quality=80, optimize=True)
+        return {
+            "success": True,
+            "data": base64.b64encode(output.getvalue()).decode("ascii"),
+            "width": w, "height": h,
+            "source_file": name,
+        }
+    except Exception:
+        return {"success": False}
+
+
 def get_embedded_art(flac_path: str) -> dict:
     """Extract embedded album art from a FLAC file as base64 JPEG thumbnail.
 

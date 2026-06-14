@@ -4,6 +4,7 @@
  * Each fact renders exactly once; the Review step owns all metadata display.
  */
 
+import { useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, IdentifyResult } from "@/lib/api";
 import { useConvertStore } from "@/stores/convert";
@@ -284,17 +285,44 @@ function ReviewStep() {
   } = useConvertStore();
   const wizardFiles = useWizardFiles();
 
+  // Local EAC art that shipped with the rip — surfaced first and selected by
+  // default so a good cover already in the folder is never silently replaced.
+  const localArt = useQuery({
+    queryKey: ["local-art", scan?.folder],
+    queryFn: () => api.localArt(scan?.folder),
+    enabled: !!scan?.folder,
+    staleTime: Infinity,
+  });
+  const hasLocalArt = localArt.data?.success === true;
+
+  // Once we know local art exists, make it the default — but only if the user
+  // hasn't already moved off the initial "auto" selection.
+  useEffect(() => {
+    if (hasLocalArt && artChoiceId === "auto") setArtChoice("local");
+  }, [hasLocalArt, artChoiceId, setArtChoice]);
+
   if (!r) return null;
   const rows = buildRows(r, cueValues(scan?.cue_metadata ?? null));
 
   const artOptions: ArtOption[] = [
-    { id: "auto", label: "Auto", sublabel: "highest resolution wins", badge: "Default" },
-    ...r.art_candidates.map((a, i) => ({
+    ...(hasLocalArt ? [{
+      id: "local",
+      label: "Local (EAC)",
+      sublabel: localArt.data?.width
+        ? `${localArt.data.width}×${localArt.data.height}`
+        : "from rip folder",
+      thumbSrc: localArt.data?.data
+        ? `data:image/jpeg;base64,${localArt.data.data}`
+        : undefined,
+      badge: "Default",
+    }] : []),
+    { id: "auto", label: "Auto", sublabel: "highest resolution wins",
+      ...(hasLocalArt ? {} : { badge: "Default" }) },
+    ...r.art_candidates.map((a) => ({
       id: `url:${a.url}`,
       label: a.source,
       sublabel: a.width ? `${a.width}×${a.height}` : (a.likes ? `${a.likes} likes` : ""),
       thumbSrc: a.thumb_url || a.url,
-      ...(i === 0 ? {} : {}),
     })),
     { id: "none", label: "No Art", sublabel: "skip embedding" },
   ];
@@ -374,6 +402,7 @@ function ConvertStep() {
       const release = r ? buildReleaseDetails(r, choices, scan?.cue_metadata ?? null, useProviderTitles) : null;
       const options: Record<string, unknown> = {};
       if (artChoiceId === "none") options.embed_album_art = false;
+      else if (artChoiceId === "local") options.art_source = "local";
       else if (artChoiceId?.startsWith("url:")) options.art_url = artChoiceId.slice(4);
       if (scan?.folder) options.input_folder = scan.folder;
 

@@ -13,7 +13,7 @@ from database import log_conversion, update_conversion
 from encoder import encode_to_flac, get_wav_info
 from tagger import embed_metadata, build_metadata_from_release
 from file_manager import build_output_path, copy_to_network, cleanup_source_files
-from services.art import select_best_art, prepare_art
+from services.art import select_best_art, prepare_art, find_local_art
 
 
 def _download_art(url: str, max_size: int, quality: int) -> bytes | None:
@@ -27,6 +27,67 @@ def _download_art(url: str, max_size: int, quality: int) -> bytes | None:
         return prepare_art(resp.content, max_size, quality)
     except Exception:
         return None
+
+
+def _build_track_metadata(release_details: dict | None, file_info: dict,
+                          track_number: int, disc_number: int) -> dict:
+    """Build a track's tag dict from the matched release, then backfill anything
+    it didn't supply from the CUE/filename parse.
+
+    Expanded-edition bonus tracks are frequently absent from the matched
+    MusicBrainz release; the CUE still has their titles, so a release match must
+    never throw those away (the "Track 10" bug, where bonus tracks landed with
+    no title or track number at all).
+    """
+    metadata = {}
+    if release_details and not release_details.get("error"):
+        metadata = build_metadata_from_release(release_details, disc_number, track_number)
+
+    if not metadata.get("title"):
+        metadata["title"] = file_info.get("parsed_title", "")
+    if not metadata.get("artist"):
+        metadata["artist"] = (file_info.get("parsed_artist")
+                              or metadata.get("albumartist") or "")
+    if not metadata.get("album"):
+        metadata["album"] = file_info.get("parsed_album", "")
+    if not metadata.get("tracknumber"):
+        metadata["tracknumber"] = str(track_number)
+    if not metadata.get("discnumber"):
+        metadata["discnumber"] = str(disc_number)
+    return metadata
+
+
+def _verify_embedded(flac_path: str, metadata: dict, expect_art: bool) -> dict:
+    """Read the written FLAC back from disk and confirm the metadata (and art,
+    when requested) actually landed. This is the success gate: we never report a
+    track as converted on the strength of the encode alone — Plex/Explorer only
+    see what's truly embedded.
+
+    Every track MUST carry TITLE, ARTIST, ALBUM, and TRACKNUMBER — a file
+    missing any of these is broken regardless of what we meant to write, so the
+    check is unconditional (this is what would have caught the untitled
+    "Track 10" bonus tracks). Returns {ok, missing_tags, art_missing}: missing
+    core tags are a hard failure; missing art is a soft warning.
+    """
+    from tagger import read_metadata
+
+    result = read_metadata(flac_path)
+    if not result.get("success"):
+        return {"ok": False, "missing_tags": ["<file unreadable>"],
+                "art_missing": expect_art}
+
+    tags = result.get("tags", {})
+
+    missing = []
+    for tag in ("TITLE", "ARTIST", "ALBUM", "TRACKNUMBER"):
+        got = tags.get(tag, "")
+        if isinstance(got, list):
+            got = got[0] if got else ""
+        if str(got).strip() == "":
+            missing.append(tag)
+
+    art_missing = expect_art and not result.get("has_picture", False)
+    return {"ok": len(missing) == 0, "missing_tags": missing, "art_missing": art_missing}
 
 
 def run_conversion(
@@ -50,22 +111,28 @@ def run_conversion(
         on_progress({"status": "error", "error": "Output folder not configured"})
         return {"completed": 0, "failed": 0, "cancelled": False, "total": len(files)}
 
-    # Fetch album art once. If the user picked a specific image in the UI
-    # (options.art_url), honor it; otherwise compare all sources and pick
-    # the highest resolution.
+    # Fetch album art once. Precedence:
+    #   art_source == "local" → the rip folder's own EAC art (folder.jpg etc.)
+    #   art_url               → a specific image the user picked in the UI
+    #   otherwise             → compare all sources, pick the highest resolution
+    # Any choice that yields nothing falls back to the best available source so
+    # a missing local file never silently drops art.
     album_art = None
     if settings.get("embed_album_art"):
+        max_size = settings.get("art_max_size", 1200)
+        quality = settings.get("art_quality", 90)
         art_url = settings.get("art_url", "")
-        if art_url:
-            album_art = _download_art(art_url,
-                                      settings.get("art_max_size", 1200),
-                                      settings.get("art_quality", 90))
+        art_source = settings.get("art_source", "")
+        if art_source == "local":
+            album_art = find_local_art(settings.get("input_folder", ""), max_size, quality)
+        elif art_url:
+            album_art = _download_art(art_url, max_size, quality)
         if album_art is None:
             art_result = select_best_art(
                 release_id=release_details.get("id") if release_details else None,
                 folder=settings.get("input_folder", ""),
-                max_size=settings.get("art_max_size", 1200),
-                quality=settings.get("art_quality", 90),
+                max_size=max_size,
+                quality=quality,
             )
             album_art = art_result.get("bytes")
 
@@ -102,17 +169,8 @@ def run_conversion(
             failed += 1
             continue
 
-        # Build metadata
-        if release_details and not release_details.get("error"):
-            metadata = build_metadata_from_release(release_details, disc_number, track_number)
-        else:
-            metadata = {
-                "title": file_info.get("parsed_title", f"Track {track_number:02d}"),
-                "artist": file_info.get("parsed_artist", "Unknown Artist"),
-                "album": file_info.get("parsed_album", "Unknown Album"),
-                "tracknumber": str(track_number),
-                "discnumber": str(disc_number),
-            }
+        metadata = _build_track_metadata(release_details, file_info,
+                                         track_number, disc_number)
 
         row_id = log_conversion(
             source_path=wav_path,
@@ -175,6 +233,14 @@ def run_conversion(
             continue
 
         tag_result = embed_metadata(str(temp_flac), metadata, album_art)
+        if not tag_result["success"]:
+            update_conversion(row_id, status="failed", error_message=tag_result["error"],
+                              duration_ms=encode_result["duration_ms"])
+            on_file_done({"file": wav_path, "success": False,
+                          "error": f"Tagging failed: {tag_result['error']}"})
+            temp_flac.unlink(missing_ok=True)
+            failed += 1
+            continue
 
         copy_result = copy_to_network(str(temp_flac), str(dest_path), overwrite=True)
 
@@ -188,6 +254,19 @@ def run_conversion(
 
         temp_flac.unlink(missing_ok=True)
 
+        # Success gate: read the file back from its final location and confirm
+        # the tags (and art, when requested) are really embedded. Missing core
+        # tags fail the track — which also blocks source-file cleanup below, so
+        # the WAV + CUE survive for a retry. Missing art only warns.
+        verify = _verify_embedded(str(dest_path), metadata, expect_art=album_art is not None)
+        if not verify["ok"]:
+            err = "Embedding verification failed: missing " + ", ".join(verify["missing_tags"])
+            update_conversion(row_id, status="failed", error_message=err,
+                              duration_ms=encode_result["duration_ms"])
+            on_file_done({"file": wav_path, "success": False, "error": err})
+            failed += 1
+            continue
+
         update_conversion(
             row_id,
             status="completed",
@@ -198,14 +277,17 @@ def run_conversion(
         )
 
         completed += 1
-        on_file_done({
+        done_payload = {
             "file": wav_path,
             "success": True,
             "dest": str(dest_path),
             "compression_ratio": round(encode_result["file_size"] / wav_info["file_size"], 3) if wav_info["file_size"] > 0 else 0,
             "duration_ms": encode_result["duration_ms"],
             "tags_written": tag_result.get("fields_written", 0),
-        })
+        }
+        if verify["art_missing"]:
+            done_payload["warning"] = "tags embedded, but album art is missing"
+        on_file_done(done_payload)
 
     # Post-conversion cleanup: delete source WAV, CUE, and art files —
     # only when every file converted successfully and nothing was cancelled
