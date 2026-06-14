@@ -41,33 +41,45 @@ def lookup_discid(disc_id: str) -> list[dict]:
     return cache.cached("musicbrainz", f"discid|{disc_id}", cache.TTL_RELEASE, fetch) or []
 
 
-def best_release_for_group(release_group_id: str) -> str | None:
-    """Pick the canonical release in a release group (prefer US + CD, earliest)."""
+def _release_track_count(rel: dict) -> int:
+    return sum(int(m.get("track-count") or 0) for m in rel.get("medium-list", []))
+
+
+def _rank_release(rel: dict, track_count: int | None) -> tuple:
+    """Sort key for picking a release within a group. A release whose track
+    count matches the disc (when known) wins outright — this is what keeps an
+    expanded/special edition from being replaced by the 11-track standard one.
+    Then prefer US + CD, then the earliest date."""
+    country = (rel.get("country") or "").upper()
+    formats = [m.get("format", "") for m in rel.get("medium-list", [])]
+    track_match = track_count is not None and _release_track_count(rel) == track_count
+    is_us = country in ("US", "XW")
+    is_cd = any("CD" in f for f in formats if f)
+    return (
+        0 if track_match else 1,
+        -(2 * is_us + is_cd),
+        rel.get("date") or "9999",
+    )
+
+
+def best_release_for_group(release_group_id: str,
+                           track_count: int | None = None) -> str | None:
+    """Pick the canonical release in a release group. Prefers a track-count
+    match with the disc (when known), then US + CD, then earliest."""
     def fetch():
         import musicbrainzngs
         from metadata_lookup import init_musicbrainz
         init_musicbrainz()
         ratelimit.wait("musicbrainz")
         result = musicbrainzngs.browse_releases(
-            release_group=release_group_id, includes=["media"], limit=50)
+            release_group=release_group_id, includes=["media"], limit=100)
         releases = result.get("release-list", [])
         if not releases:
             return {"release_id": None}
-
-        def score(rel):
-            country = (rel.get("country") or "").upper()
-            formats = [m.get("format", "") for m in rel.get("medium-list", [])]
-            is_us = country in ("US", "XW")
-            is_cd = any("CD" in f for f in formats if f)
-            return (
-                -(2 * is_us + is_cd),
-                rel.get("date") or "9999",
-            )
-
-        releases.sort(key=score)
+        releases.sort(key=lambda r: _rank_release(r, track_count))
         return {"release_id": releases[0].get("id")}
 
-    result = cache.cached("musicbrainz", f"best-release|{release_group_id}",
+    result = cache.cached("musicbrainz", f"best-release|{release_group_id}|{track_count}",
                           cache.TTL_RELEASE, fetch)
     return result.get("release_id") if result else None
 

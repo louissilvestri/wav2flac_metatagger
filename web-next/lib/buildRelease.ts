@@ -5,7 +5,7 @@
  * is used instead — same per-field semantics as Quick Clean Up.
  */
 
-import { IdentifyResult, CueMetadata } from "@/lib/api";
+import { IdentifyResult, CueMetadata, ReleaseDetails } from "@/lib/api";
 import { Choices } from "@/components/MetadataCompare";
 
 export function buildReleaseDetails(
@@ -65,6 +65,54 @@ export function buildReleaseDetails(
     catalog_number: chosen("catalog_number"),
     barcode: chosen("barcode") || (cue?.album?.barcode ?? ""),
     country: chosen("country"),
+    discs,
+  };
+}
+
+/** Build conversion release_details from a user-picked edition (a full
+ * ReleaseDetails fetched for the chosen candidate). The edition supplies the
+ * tracklist + release identity; the user's album-field choices still win, and
+ * the CUE-titles toggle still applies. */
+export function releaseDetailsFromEdition(
+  ed: ReleaseDetails,
+  choices: Choices,
+  cue: CueMetadata | null,
+  useProviderTitles: boolean,
+) {
+  const chosen = (key: string): string =>
+    choices[key]?.include ? choices[key].value : "";
+
+  const discs = ed.discs.map((d) => ({
+    position: d.position,
+    format: d.format || "CD",
+    tracks: d.tracks.map((t, i) => {
+      const cueTrack = cue?.tracks?.[(t.position || i + 1) - 1];
+      const title = useProviderTitles ? t.title : (cueTrack?.title || t.title);
+      return {
+        position: t.position || i + 1,
+        title,
+        artist: t.artist || "",
+        artist_id: "",
+        length_ms: t.length_ms ?? null,
+        isrc: t.isrc || cueTrack?.isrc || "",
+        recording_id: t.recording_id || "",
+      };
+    }),
+  }));
+
+  return {
+    id: ed.id,
+    release_group_id: ed.release_group_id || "",
+    title: chosen("title") || ed.title,
+    artist: chosen("artist") || ed.artist,
+    artist_id: ed.artist_id || "",
+    date: chosen("release_date") || ed.date || "",
+    first_release_date: chosen("original_date") || ed.first_release_date || "",
+    genre: chosen("genre") || ed.genre || "",
+    label: chosen("label") || ed.label || "",
+    catalog_number: chosen("catalog_number") || ed.catalog_number || "",
+    barcode: chosen("barcode") || ed.barcode || "",
+    country: chosen("country") || ed.country || "",
     discs,
   };
 }

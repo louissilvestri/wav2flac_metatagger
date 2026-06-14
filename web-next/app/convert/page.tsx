@@ -4,7 +4,7 @@
  * Each fact renders exactly once; the Review step owns all metadata display.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, IdentifyResult } from "@/lib/api";
 import { useConvertStore } from "@/stores/convert";
@@ -12,7 +12,7 @@ import { Panel, Button, Input, Field, Terminal, TermLine, Spinner, Tag, Checkbox
 import { MetadataCompare, CompareRow, defaultChoices, asText } from "@/components/MetadataCompare";
 import { ArtPicker, ArtOption } from "@/components/ArtPicker";
 import { JobProgress } from "@/components/JobProgress";
-import { buildReleaseDetails } from "@/lib/buildRelease";
+import { buildReleaseDetails, releaseDetailsFromEdition } from "@/lib/buildRelease";
 
 const STEPS = [
   { id: "source", label: "1 · Source" },
@@ -68,7 +68,12 @@ function SourceStep() {
 
   const doScan = useMutation({
     mutationFn: () => api.scanInput(effectiveFolder || undefined),
-    onSuccess: (result) => setScan(result),
+    onSuccess: (result) => {
+      setScan(result);
+      // Single-album folder: jump straight to Identify. Multi-album folders
+      // stay here so the user can pick which album to convert first.
+      if (!result.error && !result.multi_album) setStep("identify");
+    },
   });
 
   const lines: TermLine[] = [];
@@ -194,6 +199,15 @@ function IdentifyStep() {
     },
   });
 
+  // Auto-identify on arrival when we don't already have a result.
+  const autoIdentified = useRef(false);
+  useEffect(() => {
+    if (!autoIdentified.current && !identifyResult && doIdentify.isIdle) {
+      autoIdentified.current = true;
+      doIdentify.mutate();
+    }
+  }, [identifyResult, doIdentify]);
+
   const r = identifyResult;
   const lines: TermLine[] = [];
   if (r) {
@@ -282,8 +296,25 @@ function ReviewStep() {
   const {
     scan, identifyResult: r, choices, setChoices, setStep,
     useProviderTitles, setUseProviderTitles, artChoiceId, setArtChoice,
+    editionId, editionDetails, setEdition,
   } = useConvertStore();
   const wizardFiles = useWizardFiles();
+
+  // Candidate editions from every provider — the user picks which one to use.
+  const candidates = useQuery({
+    queryKey: ["release-candidates", scan?.folder],
+    queryFn: () => api.releaseCandidates({ folder_path: scan?.folder }),
+    enabled: !!scan?.folder,
+    staleTime: Infinity,
+  });
+
+  // Fetch the chosen edition's full tracklist on demand.
+  const chooseEdition = useMutation({
+    mutationFn: (c: { provider: string; id: string }) => api.getRelease(c.id),
+    onSuccess: (details, c) => {
+      if (!details.error) setEdition(`${c.provider}:${c.id}`, details);
+    },
+  });
 
   // Local EAC art that shipped with the rip — surfaced first and selected by
   // default so a good cover already in the folder is never silently replaced.
@@ -327,9 +358,23 @@ function ReviewStep() {
     { id: "none", label: "No Art", sublabel: "skip embedding" },
   ];
 
-  const matched = r.tracks.length;
+  // Effective tracklist: the chosen edition's tracks override the auto-identified ones.
+  const tracks = editionDetails
+    ? editionDetails.discs.flatMap((d) =>
+        d.tracks.map((t) => ({ ...t, disc_number: d.position, length_ms: t.length_ms ?? null })))
+    : r.tracks;
+  const trackSource = editionDetails
+    ? (editionId?.split(":")[0] ?? "edition")
+    : (r.track_source || "n/a");
+
+  // The candidate currently in effect (chosen, else whatever was auto-identified)
+  const activeId = editionId
+    ?? (r.ids.musicbrainz_release ? `musicbrainz:${r.ids.musicbrainz_release}`
+        : r.ids.discogs_release ? `discogs:${r.ids.discogs_release}` : null);
+
+  const matched = tracks.length;
   const scanned = wizardFiles.length;
-  const discCount = Math.max(1, ...r.tracks.map((t) => t.disc_number || 1));
+  const discCount = Math.max(1, ...tracks.map((t) => t.disc_number || 1));
 
   return (
     <div className="space-y-3">
@@ -356,11 +401,60 @@ function ReviewStep() {
         )}
       </Panel>
 
+      <Panel title="Edition">
+        {candidates.isLoading && <Spinner label="searching all providers for editions…" />}
+        {candidates.data && candidates.data.length === 0 && (
+          <p className="font-mono text-xs text-muted">
+            No candidate releases found — the auto-identified tracklist will be used.
+          </p>
+        )}
+        {candidates.data && candidates.data.length > 0 && (
+          <>
+            <p className="mb-2 font-mono text-[0.7rem] text-muted">
+              Pick the edition that matches your disc ({scanned} tracks). Track
+              counts come from the provider; “?” means unknown until selected.
+            </p>
+            <div className="max-h-56 space-y-1 overflow-y-auto">
+              {candidates.data.map((c) => {
+                const key = `${c.provider}:${c.id}`;
+                const active = key === activeId;
+                const countMatches = c.track_count > 0 && c.track_count === scanned;
+                return (
+                  <button
+                    key={key}
+                    disabled={chooseEdition.isPending}
+                    onClick={() => chooseEdition.mutate({ provider: c.provider, id: c.id })}
+                    className={cx(
+                      "flex w-full cursor-pointer items-center gap-2 border px-3 py-1.5 text-left font-mono text-[0.72rem]",
+                      "transition-colors hover:border-accent/60",
+                      active ? "border-accent box-glow" : "border-white/10",
+                    )}
+                  >
+                    <Tag tone={c.provider === "musicbrainz" ? "ok" : "warn"}>{c.provider}</Tag>
+                    <span className={cx("tabular-nums", countMatches ? "text-ok" : "text-muted")}>
+                      {c.track_count > 0 ? `${c.track_count} trk` : "? trk"}
+                    </span>
+                    <span className="text-muted">{c.date || "—"}</span>
+                    {c.country && <span className="text-muted">{c.country}</span>}
+                    {c.format && <span className="truncate text-accent-2">{c.format}</span>}
+                    <span className="ml-auto flex items-center gap-1.5">
+                      {c.recommended && <Tag tone="ok">Recommended</Tag>}
+                      {active && <span className="text-accent">●</span>}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {chooseEdition.isPending && <Spinner label="loading edition tracklist…" />}
+          </>
+        )}
+      </Panel>
+
       <Panel title="Album Art">
         <ArtPicker options={artOptions} selectedId={artChoiceId} onSelect={setArtChoice} />
       </Panel>
 
-      <Panel title={`Tracks (${r.tracks.length} from ${r.track_source || "n/a"})`}>
+      <Panel title={`Tracks (${tracks.length} from ${trackSource})`}>
         <div className="mb-2">
           <Checkbox
             label="Use provider track titles (uncheck to keep CUE titles)"
@@ -371,7 +465,7 @@ function ReviewStep() {
         <div className="max-h-72 overflow-y-auto">
           <table className="w-full font-mono text-[0.78rem]">
             <tbody>
-              {r.tracks.map((t) => (
+              {tracks.map((t) => (
                 <tr key={`${t.disc_number}-${t.position}`} className="border-b border-white/5">
                   <td className="w-10 p-1.5 text-muted">{t.position}</td>
                   <td className="p-1.5">{t.title}</td>
@@ -393,13 +487,16 @@ function ReviewStep() {
 function ConvertStep() {
   const {
     scan, identifyResult: r, choices, useProviderTitles, artChoiceId,
-    jobId, setJobId, setStep, reset,
+    editionDetails, jobId, setJobId, setStep, reset,
   } = useConvertStore();
   const wizardFiles = useWizardFiles();
 
   const start = useMutation({
     mutationFn: () => {
-      const release = r ? buildReleaseDetails(r, choices, scan?.cue_metadata ?? null, useProviderTitles) : null;
+      const cue = scan?.cue_metadata ?? null;
+      const release = editionDetails
+        ? releaseDetailsFromEdition(editionDetails, choices, cue, useProviderTitles)
+        : (r ? buildReleaseDetails(r, choices, cue, useProviderTitles) : null);
       const options: Record<string, unknown> = {};
       if (artChoiceId === "none") options.embed_album_art = false;
       else if (artChoiceId === "local") options.art_source = "local";
@@ -414,10 +511,12 @@ function ConvertStep() {
         .sort((a, b) => a.key - b.key)
         .map((x) => x.f);
 
-      // The release track list is authoritative for ordering: when its track
-      // count matches the file count, file[i] → track[i]. This is robust to
-      // unparseable filenames (the original "Track 00" overwrite bug).
-      const flat = (r?.tracks ?? []).slice()
+      // The CHOSEN release's track list is authoritative for ordering: when its
+      // track count matches the file count, file[i] → track[i]. Derived from
+      // `release` (the picked edition or the auto-identified one) so an edition
+      // switch realigns correctly.
+      const flat = (release?.discs ?? [])
+        .flatMap((d) => d.tracks.map((t) => ({ position: t.position, disc_number: d.position })))
         .sort((a, b) => (a.disc_number - b.disc_number) || (a.position - b.position));
       const alignByIndex = flat.length > 0 && flat.length === ordered.length;
 
@@ -437,16 +536,28 @@ function ConvertStep() {
     onSuccess: (resp) => setJobId(resp.job_id),
   });
 
+  // Arriving here from Review IS the confirmation — kick the job off
+  // automatically so "Convert →" and "Start" are a single click.
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!autoStarted.current && !jobId && start.isIdle) {
+      autoStarted.current = true;
+      start.mutate();
+    }
+  }, [jobId, start]);
+
   return (
     <div className="space-y-3">
       <Panel
         title="Conversion"
         actions={!jobId && (
           <>
-            <Button variant="ghost" onClick={() => setStep("review")}>← Back</Button>
-            <Button variant="solid" disabled={start.isPending} onClick={() => start.mutate()}>
-              {start.isPending ? "Starting…" : `Start (${wizardFiles.length} files)`}
-            </Button>
+            <Button variant="ghost" disabled={start.isPending} onClick={() => setStep("review")}>← Back</Button>
+            {start.isError && (
+              <Button variant="solid" disabled={start.isPending} onClick={() => start.mutate()}>
+                Retry ({wizardFiles.length} files)
+              </Button>
+            )}
           </>
         )}
       >
@@ -455,7 +566,11 @@ function ConvertStep() {
         )}
         {jobId
           ? <JobProgress jobId={jobId} />
-          : <p className="text-sm text-muted">Encode → tag → verify → move to the Plex library.</p>}
+          : <p className="text-sm text-muted">
+              {start.isError
+                ? "Couldn't start — check the error above and retry."
+                : "Starting… encode → tag → verify → move to the Plex library."}
+            </p>}
         {jobId && (
           <div className="mt-3">
             <Button variant="ghost" onClick={reset}>New conversion</Button>

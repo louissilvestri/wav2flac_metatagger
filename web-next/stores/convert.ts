@@ -6,7 +6,7 @@
  */
 
 import { create } from "zustand";
-import { ScanResult, IdentifyResult } from "@/lib/api";
+import { ScanResult, IdentifyResult, ReleaseDetails } from "@/lib/api";
 import { Choices } from "@/components/MetadataCompare";
 
 export type WizardStep = "source" | "identify" | "review" | "convert";
@@ -20,6 +20,10 @@ interface ConvertState {
   choices: Choices;            // per-field include/value/source decisions
   useProviderTitles: boolean;  // provider track titles vs CUE titles
   artChoiceId: string | null;  // ArtPicker selection ("auto" | "none" | url id)
+  // Edition picker: which provider+release the user chose, and its fetched
+  // details. null = use the auto-identified release.
+  editionId: string | null;    // "provider:id" of the chosen candidate
+  editionDetails: ReleaseDetails | null;
   jobId: string | null;
 
   setStep: (s: WizardStep) => void;
@@ -30,6 +34,7 @@ interface ConvertState {
   setChoices: (c: Choices) => void;
   setUseProviderTitles: (v: boolean) => void;
   setArtChoice: (id: string | null) => void;
+  setEdition: (id: string | null, details: ReleaseDetails | null) => void;
   setJobId: (id: string | null) => void;
   reset: () => void;
 }
@@ -43,6 +48,8 @@ const initial = {
   choices: {},
   useProviderTitles: true,
   artChoiceId: "auto",
+  editionId: null,
+  editionDetails: null,
   jobId: null,
 };
 
@@ -52,10 +59,12 @@ export const useConvertStore = create<ConvertState>((set) => ({
   setFolder: (folder) => set({ folder }),
   setScan: (scan) => set({ scan, albumGroup: null }),
   setAlbumGroup: (albumGroup) => set({ albumGroup }),
-  setIdentify: (identifyResult) => set({ identifyResult }),
+  // A fresh identification invalidates any previously chosen edition.
+  setIdentify: (identifyResult) => set({ identifyResult, editionId: null, editionDetails: null }),
   setChoices: (choices) => set({ choices }),
   setUseProviderTitles: (useProviderTitles) => set({ useProviderTitles }),
   setArtChoice: (artChoiceId) => set({ artChoiceId }),
+  setEdition: (editionId, editionDetails) => set({ editionId, editionDetails }),
   setJobId: (jobId) => set({ jobId }),
   reset: () => set(initial),
 }));

@@ -184,12 +184,31 @@ export interface ReleaseDetails {
   date: string;
   first_release_date?: string;
   genre?: string;
+  label?: string;
+  catalog_number?: string;
+  barcode?: string;
+  country?: string;
   release_group_id?: string;
   error?: string;
-  discs: { position: number; tracks: {
+  discs: { position: number; format?: string; tracks: {
     position: number; title: string; artist: string;
+    isrc?: string; length_ms?: number | null;
     recording_id?: string; disc_number?: number;
   }[] }[];
+}
+
+export interface ReleaseCandidate {
+  provider: string;
+  id: string;
+  title: string;
+  artist: string;
+  date: string;
+  country: string;
+  format: string;
+  label: string;
+  track_count: number;
+  disc_count: number;
+  recommended: boolean;
 }
 
 export interface ReassignPreview {
@@ -242,6 +261,11 @@ export const api = {
     file_paths?: string[]; folder_path?: string;
   }) => post<IdentifyResult>("/api/metadata/identify", req),
 
+  releaseCandidates: (req: {
+    artist?: string; album?: string; track_count?: number;
+    disc_id?: string; folder_path?: string;
+  }) => post<ReleaseCandidate[]>("/api/metadata/release-candidates", req),
+
   startConvert: (req: { files: unknown[]; release_details?: unknown; options?: unknown }) =>
     post<{ job_id: string }>("/api/convert", req),
   getJob: (id: string) => get<Job>(`/api/jobs/${id}`),
@@ -251,6 +275,8 @@ export const api = {
   stats: () => get<Stats>("/api/stats"),
 
   libraryScan: () => get<LibraryScan>("/api/library/scan"),
+  rescanLibraryPaths: (paths: string[]) =>
+    post<LibraryScan>("/api/library/rescan-paths", { paths }),
   findOriginalAlbum: (artist: string, title: string) =>
     get<AlbumCandidate[]>(`/api/library/original-album?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`),
   getRelease: (id: string) => get<ReleaseDetails>(`/api/releases/${id}`),

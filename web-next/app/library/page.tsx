@@ -7,7 +7,7 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, LibraryAlbum, LibraryFile, LibraryScan, IdentifyResult, AlbumCandidate, FieldValue } from "@/lib/api";
+import { api, LibraryAlbum, LibraryFile, LibraryScan, IdentifyResult, ReleaseCandidate, ReleaseDetails, FieldValue } from "@/lib/api";
 import { foldForCompare, normalizeArtistForSearch } from "@/lib/text";
 import { Panel, Button, Input, Field, StatCard, Spinner, Tag, Dialog, Terminal, TermLine, cx } from "@/components/ui";
 import { MetadataCompare, CompareRow, Choices, defaultChoices, asText } from "@/components/MetadataCompare";
@@ -24,6 +24,7 @@ export default function LibraryPage() {
     queryFn: api.libraryScan,
     enabled: false,           // scanning 1000+ network files is explicit
     staleTime: Infinity,
+    gcTime: Infinity,         // keep results across tab switches for the session
   });
 
   const data = scan.data;
@@ -169,6 +170,9 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
   const [result, setResult] = useState<IdentifyResult | null>(null);
   const [choices, setChoices] = useState<Choices>({});
   const [artChoice, setArtChoice] = useState<string>(album.has_art ? "keep" : "auto");
+  // Edition picker: chosen provider+release and its fetched tracklist.
+  const [editionId, setEditionId] = useState<string | null>(null);
+  const [editionDetails, setEditionDetails] = useState<ReleaseDetails | null>(null);
 
   // Thumbnail of the currently embedded art for the "Current" option
   const fileWithArt = album.files.find((f) => f.has_art);
@@ -189,8 +193,38 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
     onSuccess: (r) => {
       setResult(r);
       setChoices(defaultChoices(rowsFor(r)));
+      setEditionId(null);          // a fresh identify invalidates any chosen edition
+      setEditionDetails(null);
     },
   });
+
+  // Candidate editions from every provider (track count = this album's files).
+  const candidates = useQuery({
+    queryKey: ["release-candidates", album.albumartist, album.album, album.files.length],
+    queryFn: () => api.releaseCandidates({
+      artist: album.albumartist, album: album.album, track_count: album.files.length }),
+    enabled: !!result,
+    staleTime: Infinity,
+  });
+
+  const chooseEdition = useMutation({
+    mutationFn: (c: ReleaseCandidate) => api.getRelease(c.id),
+    onSuccess: (details, c) => {
+      if (!details.error) { setEditionId(`${c.provider}:${c.id}`); setEditionDetails(details); }
+    },
+  });
+
+  // The tracklist that drives matching: chosen edition overrides identify.
+  const effTracks: MatchTrack[] = editionDetails
+    ? editionDetails.discs.flatMap((d) => d.tracks.map((t) => ({
+        position: t.position, title: t.title, artist: t.artist,
+        disc_number: d.position, recording_id: t.recording_id })))
+    : (result?.tracks ?? []);
+  const activeId = editionId
+    ?? (result?.ids.musicbrainz_release ? `musicbrainz:${result.ids.musicbrainz_release}` : null);
+
+  // Per-file mapping to the chosen tracklist, for the side-by-side preview.
+  const trackPairs = album.files.map((f) => ({ file: f, match: matchTrack(effTracks, f) }));
 
   const rowsFor = (r: IdentifyResult): CompareRow[] => [
     { key: "artist", label: "Album Artist", current: album.albumartist, merged: r.fields.artist },
@@ -206,44 +240,63 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
       const pick = (key: string, fallback: string) =>
         choices[key]?.include ? choices[key].value : fallback;
 
+      // Only stamp a MusicBrainz album ID when the active edition is from MB.
+      const mbAlbumId = editionDetails
+        ? (editionId?.startsWith("musicbrainz:") ? editionDetails.id : "")
+        : (result.ids.musicbrainz_release ?? "");
+
       const meta: Record<string, string> = {
         // Path-building fields are ALWAYS sent: unchecked = keep the current
         // value, never blank (a blank album becomes "Unknown Album" on disk)
         albumartist: pick("artist", album.albumartist),
         album: pick("title", album.album),
         date: pick("original_date", album.date),
-        musicbrainz_albumid: result.ids.musicbrainz_release ?? "",
-        disctotal: String(Math.max(1, ...result.tracks.map((t) => t.disc_number || 1))),
+        musicbrainz_albumid: mbAlbumId,
+        disctotal: String(Math.max(1, ...effTracks.map((t) => t.disc_number || 1))),
       };
       // Non-path fields: only send when checked (merge keeps existing tags)
       for (const key of ["genre", "label"] as const) {
         if (choices[key]?.include) meta[key] = choices[key].value;
       }
 
+      // Per-disc track counts from the chosen tracklist → TRACKTOTAL. Falls
+      // back to the album's file count so even unmatched tracks get a total.
+      const perDisc: Record<number, number> = {};
+      for (const t of effTracks) perDisc[t.disc_number || 1] = (perDisc[t.disc_number || 1] || 0) + 1;
+
       const tracks = album.files.map((f) => {
-        const match = matchTrack(result, f);
+        const match = matchTrack(effTracks, f);
+        const disc = match?.disc_number ?? Number(f.discnumber || "1") ?? 1;
+        const tracktotal = perDisc[disc] || effTracks.length || album.files.length;
         return {
           path: f.path,
           title: match?.title ?? (f.title || f.filename.replace(/^\d+[\s\-._]+/, "").replace(/\.flac$/i, "")),
           artist: match?.artist ?? f.artist,
           tracknumber: String(match?.position ?? f.tracknumber ?? "1"),
-          discnumber: String(match?.disc_number ?? f.discnumber ?? "1"),
+          discnumber: String(disc),
+          tracktotal: String(tracktotal),
           musicbrainz_trackid: match?.recording_id ?? "",
         };
       });
+
+      // "Auto" art follows the chosen edition when one is picked.
+      const autoArtId = editionDetails?.id ?? result.ids.musicbrainz_release ?? null;
 
       return api.batchReassign({
         tracks,
         album_metadata: meta,
         art_release_id: artChoice === "keep" ? null
           : artChoice === "none" ? "__none__"
-          : artChoice === "auto" ? (result.ids.musicbrainz_release ?? null)
+          : artChoice === "auto" ? autoArtId
           : null,
         art_url: artChoice.startsWith("url:") ? artChoice.slice(4) : null,
       });
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["library"] });
+    onSuccess: async (res) => {
+      // Partial rescan: only the touched files (old + new paths), not the share
+      const paths = res.results.flatMap((r) => [r.path, r.new_path].filter(Boolean));
+      const updated = await api.rescanLibraryPaths(paths);
+      qc.setQueryData(["library"], updated);
       onClose();
     },
   });
@@ -297,9 +350,89 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
               <p className="font-mono text-xs text-muted">
                 Identified via <b className="text-accent">{result.identity.method}</b>
                 {result.identity.confidence_note && ` (${result.identity.confidence_note})`} ·{" "}
-                {result.tracks.length} tracks vs {album.files.length} files
+                {effTracks.length} tracks vs {album.files.length} files
               </p>
               <MetadataCompare rows={rowsFor(result)} choices={choices} onChange={setChoices} />
+
+              <div>
+                <h4 className="font-display mb-1 text-xs text-accent-2">Edition</h4>
+                {candidates.isLoading && <Spinner label="searching all providers for editions…" />}
+                {candidates.data && candidates.data.length > 0 && (
+                  <div className="max-h-44 space-y-1 overflow-y-auto">
+                    <p className="font-mono text-[0.68rem] text-muted">
+                      Pick the edition matching this album ({album.files.length} tracks).
+                    </p>
+                    {candidates.data.map((c) => {
+                      const key = `${c.provider}:${c.id}`;
+                      const active = key === activeId;
+                      const countMatches = c.track_count > 0 && c.track_count === album.files.length;
+                      return (
+                        <button
+                          key={key}
+                          disabled={chooseEdition.isPending}
+                          onClick={() => chooseEdition.mutate(c)}
+                          className={cx(
+                            "flex w-full cursor-pointer items-center gap-2 border px-3 py-1.5 text-left font-mono text-[0.72rem]",
+                            "transition-colors hover:border-accent/60",
+                            active ? "border-accent box-glow" : "border-white/10",
+                          )}
+                        >
+                          <Tag tone={c.provider === "musicbrainz" ? "ok" : "warn"}>{c.provider}</Tag>
+                          <span className={cx("tabular-nums", countMatches ? "text-ok" : "text-muted")}>
+                            {c.track_count > 0 ? `${c.track_count} trk` : "? trk"}
+                          </span>
+                          <span className="text-muted">{c.date || "—"}</span>
+                          {c.country && <span className="text-muted">{c.country}</span>}
+                          {c.format && <span className="truncate text-accent-2">{c.format}</span>}
+                          <span className="ml-auto flex items-center gap-1.5">
+                            {c.recommended && <Tag tone="ok">Recommended</Tag>}
+                            {active && <span className="text-accent">●</span>}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {chooseEdition.isPending && <Spinner label="loading edition tracklist…" />}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <h4 className="font-display mb-1 text-xs text-accent-2">
+                  Tracks — your file → edition
+                </h4>
+                <div className="max-h-60 overflow-y-auto">
+                  <table className="w-full font-mono text-[0.72rem]">
+                    <thead>
+                      <tr className="border-b border-white/15 text-left text-[0.6rem] uppercase text-muted">
+                        <th className="w-8 p-1">#</th>
+                        <th className="p-1">Your file</th>
+                        <th className="p-1">Edition track</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trackPairs.map(({ file: f, match }) => (
+                        <tr key={f.path} className="border-b border-white/5">
+                          <td className="p-1 text-muted">{match?.position ?? f.tracknumber ?? "?"}</td>
+                          <td className="max-w-[230px] truncate p-1 text-muted" title={f.title}>
+                            {f.title || f.filename}
+                          </td>
+                          <td className={cx("max-w-[230px] truncate p-1", match ? "text-ok" : "text-alert")}
+                              title={match?.title ?? ""}>
+                            {match?.title ?? "— no match —"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {trackPairs.some((p) => !p.match) && (
+                  <p className="mt-1 font-mono text-[0.66rem] text-alert">
+                    ⚠ {trackPairs.filter((p) => !p.match).length} file(s) didn’t match a track in this
+                    edition — try a different edition, or fix the track title first.
+                  </p>
+                )}
+              </div>
+
               <div>
                 <h4 className="font-display mb-1 text-xs text-accent-2">Album Art</h4>
                 <ArtPicker options={artOptions} selectedId={artChoice} onSelect={setArtChoice} />
@@ -321,11 +454,14 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
 
 /** Match a library file to an identified track by title (fingerprint-grade
  * matching happens upstream; this is just alignment for track numbers). */
-function matchTrack(r: IdentifyResult, f: LibraryFile) {
+type MatchTrack = { position: number; title: string; artist: string;
+                    disc_number?: number; recording_id?: string };
+
+function matchTrack(tracks: MatchTrack[], f: LibraryFile) {
   const title = (f.title || f.filename.replace(/^\d+[\s\-._]+/, "").replace(/\.flac$/i, "")).toLowerCase().trim();
   if (!title) return null;
   let best = null, bestScore = 0;
-  for (const t of r.tracks) {
+  for (const t of tracks) {
     const tt = t.title.toLowerCase().trim();
     let score = 0;
     if (tt === title) score = 3;
@@ -497,7 +633,7 @@ function TrackAutoCleanup({ file, onDone }: { file: LibraryFile; onDone: () => v
   const apply = useMutation({
     mutationFn: () => {
       if (!result) throw new Error("not identified");
-      const match = matchTrack(result, file);
+      const match = matchTrack(result.tracks, file);
       const pick = (key: string, fallback: string) =>
         choices[key]?.include ? choices[key].value : fallback;
 
@@ -519,9 +655,10 @@ function TrackAutoCleanup({ file, onDone }: { file: LibraryFile; onDone: () => v
         path: file.path, metadata, move_file: true, art_release_id: null,
       });
     },
-    onSuccess: (res) => {
+    onSuccess: async (res) => {
       if (res.success) {
-        qc.invalidateQueries({ queryKey: ["library"] });
+        const updated = await api.rescanLibraryPaths([file.path, res.new_path].filter(Boolean));
+        qc.setQueryData(["library"], updated);
         onDone();
       }
     },
@@ -567,7 +704,7 @@ function TrackAutoCleanup({ file, onDone }: { file: LibraryFile; onDone: () => v
 }
 
 function buildTrackRows(r: IdentifyResult, file: LibraryFile): CompareRow[] {
-  const match = matchTrack(r, file);
+  const match = matchTrack(r.tracks, file);
   const trackField = (value?: string): FieldValue | undefined =>
     value ? { value, source: r.track_source || "musicbrainz",
               candidates: [{ value, source: r.track_source || "musicbrainz" }] } : undefined;
@@ -581,20 +718,23 @@ function buildTrackRows(r: IdentifyResult, file: LibraryFile): CompareRow[] {
   ];
 }
 
-/** Single-track reassign: original-album candidates sorted by year with
- * "Likely Original" badge, then a per-field diff preview before applying. */
+/** Single-track reassign: multi-provider edition candidates for the track's
+ * album; the user picks the exact edition, the file is aligned to a track
+ * within it, then a per-field diff preview before applying. Album/edition-based
+ * so bonus/expanded-edition tracks resolve (MB track search alone misses them). */
 function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void }) {
   const qc = useQueryClient();
-  const [artist, setArtist] = useState(normalizeArtistForSearch(file.artist));
-  const [title, setTitle] = useState(file.title);
-  const [selected, setSelected] = useState<AlbumCandidate | null>(null);
+  const [artist, setArtist] = useState(normalizeArtistForSearch(file.albumartist || file.artist));
+  const [album, setAlbum] = useState(file.album);
+  const [title, setTitle] = useState(file.title);  // used to align within the edition
+  const [selected, setSelected] = useState<ReleaseCandidate | null>(null);
   const [metadata, setMetadata] = useState<Record<string, string> | null>(null);
   const [included, setIncluded] = useState<Record<string, boolean>>({});
   // Default to keeping whatever art is already embedded, per "embedded first".
   const [artChoice, setArtChoice] = useState<string>(file.has_art ? "keep" : "release");
 
   const search = useMutation({
-    mutationFn: () => api.findOriginalAlbum(artist, title),
+    mutationFn: () => api.releaseCandidates({ artist, album }),
   });
 
   // Thumbnail of the art already on this file (the "Current" / first option).
@@ -605,23 +745,23 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
     staleTime: Infinity,
   });
 
-  // Thumbnail of the chosen album's art (only once a candidate is selected).
+  // Thumbnail of the chosen edition's art (only once a candidate is selected).
   const relArt = useQuery({
-    queryKey: ["release-art", selected?.release_id],
-    queryFn: () => api.getReleaseArt(selected!.release_id),
-    enabled: !!selected?.release_id,
+    queryKey: ["release-art", selected?.id],
+    queryFn: () => api.getReleaseArt(selected!.id),
+    enabled: !!selected?.id,
     staleTime: Infinity,
   });
 
   const choose = useMutation({
-    mutationFn: async (cand: AlbumCandidate) => {
-      const details = await api.getRelease(cand.release_id);
+    mutationFn: async (cand: ReleaseCandidate) => {
+      const details = await api.getRelease(cand.id);
       if (details.error) throw new Error(details.error);
-      // Align this file to a track in the release by title
+      // Align this file to a track in the chosen edition by title
       let match = null;
       for (const disc of details.discs) {
         for (const t of disc.tracks) {
-          const a = t.title.toLowerCase().trim(), b = (file.title || "").toLowerCase().trim();
+          const a = t.title.toLowerCase().trim(), b = (title || "").toLowerCase().trim();
           if (a === b || a.includes(b) || b.includes(a)) {
             match = { ...t, disc_number: disc.position, track_total: disc.tracks.length };
             break;
@@ -630,19 +770,23 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
         if (match) break;
       }
       const meta: Record<string, string> = {
-        title: match?.title ?? file.title,
+        title: match?.title ?? title,
         artist: match?.artist || details.artist || file.artist,
         albumartist: details.artist ?? "",
         album: details.title ?? "",
         tracknumber: String(match?.position ?? file.tracknumber ?? "1"),
         discnumber: String(match?.disc_number ?? 1),
-        date: cand.first_release_date || details.first_release_date || details.date || "",
+        ...(match?.track_total ? { tracktotal: String(match.track_total) } : {}),
+        date: cand.date || details.first_release_date || details.date || "",
         genre: details.genre ?? "",
-        musicbrainz_albumid: cand.release_id,
-        musicbrainz_trackid: match?.recording_id ?? "",
+        // Only stamp a MusicBrainz ID when the edition actually came from MB.
+        ...(cand.provider === "musicbrainz" ? {
+          musicbrainz_albumid: cand.id,
+          musicbrainz_trackid: match?.recording_id ?? "",
+        } : {}),
       };
       const preview = await api.reassignPreview(file.path, meta);
-      return { cand, meta, preview };
+      return { cand, meta, preview, matched: !!match };
     },
     onSuccess: ({ cand, meta, preview }) => {
       setSelected(cand);
@@ -666,12 +810,13 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
         // album's art; none = explicitly skip.
         art_release_id: artChoice === "keep" ? "__keep__"
           : artChoice === "none" ? "__none__"
-          : (selected?.release_id ?? "__keep__"),
+          : (selected?.id ?? "__keep__"),
       });
     },
-    onSuccess: (res) => {
+    onSuccess: async (res) => {
       if (res.success) {
-        qc.invalidateQueries({ queryKey: ["library"] });
+        const updated = await api.rescanLibraryPaths([file.path, res.new_path].filter(Boolean));
+        qc.setQueryData(["library"], updated);
         onDone();
       }
     },
@@ -682,45 +827,52 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
   return (
     <div className="mt-3 space-y-3 border-t border-white/10 pt-3">
       <div className="flex items-end gap-2">
-        <Field label="Artist" className="flex-1">
+        <Field label="Album Artist" className="flex-1">
           <Input value={artist} onChange={(e) => setArtist(e.target.value)} />
         </Field>
-        <Field label="Track Title" className="flex-1">
+        <Field label="Album" className="flex-1">
+          <Input value={album} onChange={(e) => setAlbum(e.target.value)} />
+        </Field>
+        <Field label="Track Title (to match)" className="flex-1">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} />
         </Field>
-        <Button variant="solid" disabled={search.isPending || !artist || !title}
+        <Button variant="solid" disabled={search.isPending || !artist || !album}
                 onClick={() => search.mutate()}>
           {search.isPending ? "Searching…" : "Search"}
         </Button>
       </div>
 
       {search.data && search.data.length === 0 && (
-        <p className="font-mono text-xs text-muted">No original album found. Adjust the search terms.</p>
+        <p className="font-mono text-xs text-muted">No matching editions found. Adjust the search terms.</p>
       )}
 
       {search.data && search.data.length > 0 && !preview && (
         <div className="max-h-56 space-y-1 overflow-y-auto">
+          <p className="font-mono text-[0.68rem] text-muted">
+            Pick the edition that contains this track (track count shown when known).
+          </p>
           {search.data.map((c) => (
             <button
-              key={c.release_group_id || c.release_id}
+              key={`${c.provider}:${c.id}`}
               disabled={choose.isPending}
               onClick={() => choose.mutate(c)}
               className={cx(
-                "flex w-full cursor-pointer items-center gap-3 border px-3 py-1.5 text-left font-mono text-[0.74rem]",
+                "flex w-full cursor-pointer items-center gap-2 border px-3 py-1.5 text-left font-mono text-[0.72rem]",
                 "transition-colors hover:border-accent/60",
-                c.is_original ? "border-ok/50 bg-ok/5" : "border-white/10",
+                c.recommended ? "border-ok/50 bg-ok/5" : "border-white/10",
               )}
             >
-              <span className="truncate">{c.album}</span>
-              <span className="text-muted">{c.first_release_date || c.date || "?"}</span>
-              <span className="text-muted">{c.type}</span>
-              {c.secondary_types.length > 0 && (
-                <span className="text-accent-2">{c.secondary_types.join(", ")}</span>
-              )}
-              {c.is_original && <Tag tone="ok">Likely Original</Tag>}
+              <Tag tone={c.provider === "musicbrainz" ? "ok" : "warn"}>{c.provider}</Tag>
+              <span className="tabular-nums text-muted">
+                {c.track_count > 0 ? `${c.track_count} trk` : "? trk"}
+              </span>
+              <span className="text-muted">{c.date || "—"}</span>
+              {c.country && <span className="text-muted">{c.country}</span>}
+              {c.format && <span className="truncate text-accent-2">{c.format}</span>}
+              {c.recommended && <Tag tone="ok">Recommended</Tag>}
             </button>
           ))}
-          {choose.isPending && <Spinner label="loading release + building preview…" />}
+          {choose.isPending && <Spinner label="loading edition + building preview…" />}
         </div>
       )}
       {choose.error && <p className="font-mono text-xs text-alert">{String(choose.error)}</p>}
@@ -770,7 +922,7 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
                 }] : []),
                 {
                   id: "release",
-                  label: selected?.album || "From album",
+                  label: selected?.title || "From album",
                   sublabel: relArt.data?.success
                     ? `${relArt.data.width}×${relArt.data.height}`
                     : "this album's art",

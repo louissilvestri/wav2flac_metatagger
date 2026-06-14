@@ -73,7 +73,8 @@ def identify(
                 hit = ai.identify_album(file_paths)
                 if hit:
                     providers_status["acoustid"] = "ok"
-                    release_id = mb.best_release_for_group(hit["release_group_id"])
+                    release_id = mb.best_release_for_group(
+                        hit["release_group_id"], track_count=track_count)
                     if release_id:
                         mb_details = mb.get_release(release_id)
                         if mb_details:

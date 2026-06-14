@@ -4,24 +4,30 @@ Moved from app.py (Phase 1). All functions take explicit folder arguments so
 they're testable without user settings.
 """
 
+import os
 from pathlib import Path
 
 from config import load_settings
 from services.art import fetch_art_for_provider
 
+# Last full scan's flat file list, keyed by normalized output folder. Lets a
+# library edit re-read only the touched files instead of the whole share
+# (grouping/duplicate/stat computation is cheap; the network tag reads aren't).
+# Cleared on process restart, which simply falls back to a full scan.
+_scan_cache: dict[str, list[dict]] = {}
 
-def scan_library_full(output_folder: str) -> dict:
-    """Scan a library folder: albums, duplicates, summary stats."""
-    from library_manager import scan_library, group_library_by_album, find_duplicates
 
-    if not output_folder or not Path(output_folder).exists():
-        return {"error": "Output folder not configured or doesn't exist",
-                "albums": [], "total_files": 0}
+def _norm(p) -> str:
+    return os.path.normcase(os.path.normpath(str(p)))
 
-    files = scan_library(output_folder)
+
+def _build_scan_result(files: list[dict], output_folder: str) -> dict:
+    """Group + summarize a flat file list into the library payload. Pure CPU —
+    no disk/network I/O — so it's cheap to re-run after a partial re-read."""
+    from library_manager import group_library_by_album, find_duplicates
+
     albums = group_library_by_album(files)
     duplicates = find_duplicates(files)
-
     return {
         "albums": albums,
         "total_files": len(files),
@@ -31,6 +37,66 @@ def scan_library_full(output_folder: str) -> dict:
         "duplicates": duplicates,
         "output_folder": output_folder,
     }
+
+
+def scan_library_full(output_folder: str) -> dict:
+    """Scan a library folder: albums, duplicates, summary stats."""
+    from library_manager import scan_library
+
+    if not output_folder or not Path(output_folder).exists():
+        return {"error": "Output folder not configured or doesn't exist",
+                "albums": [], "total_files": 0}
+
+    files = scan_library(output_folder)
+    _scan_cache[_norm(output_folder)] = files
+    return _build_scan_result(files, output_folder)
+
+
+def rescan_paths(output_folder: str, paths: list[str]) -> dict:
+    """Partial rescan: re-read only `paths` (changed/moved/deleted files) and
+    recompute the library payload from the cached file set. Falls back to a full
+    scan when there's no cached baseline (e.g. after a server restart).
+
+    Pass both the old and new path for a move/reassign so the stale entry is
+    dropped and the new one picked up.
+    """
+    from library_manager import scan_library, _scan_single_file
+
+    if not output_folder or not Path(output_folder).exists():
+        return {"error": "Output folder not configured or doesn't exist",
+                "albums": [], "total_files": 0}
+
+    key = _norm(output_folder)
+    cached = _scan_cache.get(key)
+    if cached is None:
+        files = scan_library(output_folder)
+        _scan_cache[key] = files
+        return _build_scan_result(files, output_folder)
+
+    root = Path(output_folder)
+    by_path = {_norm(f["path"]): f for f in cached}
+
+    for p in paths:
+        pth = Path(p)
+        npath = _norm(pth)
+        # A file that's gone (deleted, or the source side of a move) is dropped.
+        if not (pth.exists() and pth.suffix.lower() == ".flac"):
+            by_path.pop(npath, None)
+            continue
+        try:
+            pth.relative_to(root)
+        except ValueError:
+            by_path.pop(npath, None)  # outside the library — ignore
+            continue
+        entry = _scan_single_file(pth, root)
+        if entry:
+            by_path[_norm(entry["path"])] = entry
+        else:
+            by_path.pop(npath, None)
+
+    files = list(by_path.values())
+    _scan_cache[key] = files
+    return _build_scan_result(files, output_folder)
 
 
 def delete_library_file(flac_path: str, output_folder: str) -> dict:
