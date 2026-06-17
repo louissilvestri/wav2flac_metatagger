@@ -7,6 +7,7 @@ Run:  uvicorn server.main:app --port 8178
   or: python -m server
 """
 
+import asyncio
 import json
 import os
 import queue
@@ -31,8 +32,21 @@ from services.conversion import run_conversion
 from server.jobs import init_jobs_table, recover_orphaned_jobs, job_manager
 
 
+def _ignore_connection_reset(loop, context):
+    """Swallow the benign Windows Proactor noise that fires when a client
+    abruptly drops a socket — e.g. the browser closing a job-progress SSE
+    stream or a keep-alive connection. These surface as an unhandled-callback
+    ConnectionResetError (WinError 10054) with no real impact; anything else
+    goes to the default handler."""
+    exc = context.get("exception")
+    if isinstance(exc, ConnectionResetError):
+        return
+    loop.default_exception_handler(context)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    asyncio.get_running_loop().set_exception_handler(_ignore_connection_reset)
     init_db()
     init_jobs_table()
     orphaned = recover_orphaned_jobs()
@@ -275,6 +289,7 @@ def metadata_identify(req: IdentifyRequest):
 class CandidatesRequest(BaseModel):
     artist: str = ""
     album: str = ""
+    title: str = ""                 # song title — enables a blank-album song search
     track_count: int | None = None
     disc_id: str | None = None
     folder_path: str | None = None  # derive artist/album/track_count/disc_id from CUE
@@ -310,7 +325,7 @@ def release_candidates(req: CandidatesRequest):
             except Exception:
                 pass
 
-    return find_release_candidates(artist=artist, album=album,
+    return find_release_candidates(artist=artist, album=album, title=req.title,
                                    track_count=track_count, disc_id=disc_id)
 
 

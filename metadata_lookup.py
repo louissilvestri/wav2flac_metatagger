@@ -137,6 +137,7 @@ def get_release_details(release_id: str) -> dict:
             "label": "",
             "catalog_number": "",
             "release_group_id": "",
+            "compilation": False,
             "discs": [],
         }
 
@@ -150,6 +151,10 @@ def get_release_details(release_id: str) -> dict:
             details["release_group_id"] = rg_data.get("id", "")
             # Grab first-release-date if embedded (it often is)
             details["first_release_date"] = rg_data.get("first-release-date", "")
+            # "Compilation" secondary type → authoritative compilation flag,
+            # catches single-artist greatest-hits sets with no title keyword.
+            secondary = [t.lower() for t in rg_data.get("secondary-type-list", [])]
+            details["compilation"] = "compilation" in secondary
 
         if release.get("label-info-list"):
             li = release["label-info-list"][0]

@@ -7,19 +7,12 @@ the either/or routing with the multi-source aggregation engine.
 from pathlib import Path
 
 from config import load_settings
+from text_utils import strip_various_artist
 from cue_parser import (
     parse_cue_file, find_cue_file, cue_to_metadata,
     calculate_musicbrainz_discid, get_leadout_from_cue_and_wavs,
     get_toc_for_musicbrainz,
 )
-
-
-def _normalize_va_for_discogs(artist: str | None) -> str:
-    """Discogs uses 'Various', not 'Various Artists' — drop it entirely so the
-    album title carries the search."""
-    if artist and artist.lower().strip() in ("various artists", "various"):
-        return ""
-    return artist or ""
 
 
 def search_releases(artist=None, album=None, track_count=None, settings=None) -> list[dict]:
@@ -29,7 +22,7 @@ def search_releases(artist=None, album=None, track_count=None, settings=None) ->
 
     if provider == "discogs":
         from discogs_lookup import search_release as discogs_search
-        return discogs_search(artist=_normalize_va_for_discogs(artist),
+        return discogs_search(artist=strip_various_artist(artist),
                               album=album, tracks=track_count)
     else:
         from metadata_lookup import search_release
@@ -64,7 +57,7 @@ def find_album_by_name(artist: str, album_name: str, settings=None):
 
         if provider == "discogs":
             from discogs_lookup import search_release as discogs_search
-            results = discogs_search(artist=_normalize_va_for_discogs(artist),
+            results = discogs_search(artist=strip_various_artist(artist),
                                      album=album_name)
             if results and not results[0].get("error"):
                 candidates = []

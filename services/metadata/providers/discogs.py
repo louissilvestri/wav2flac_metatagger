@@ -1,12 +1,7 @@
 """Discogs provider — styles, labels, catalog numbers, pressing detail."""
 
+from text_utils import strip_various_artist
 from services.metadata import cache, ratelimit
-
-
-def _normalize_va(artist: str | None) -> str:
-    if artist and artist.lower().strip() in ("various artists", "various"):
-        return ""
-    return artist or ""
 
 
 def search_best_release(artist: str = "", album: str = "") -> dict | None:
@@ -15,7 +10,7 @@ def search_best_release(artist: str = "", album: str = "") -> dict | None:
     def fetch():
         from discogs_lookup import search_release
         ratelimit.wait("discogs")
-        results = search_release(artist=_normalize_va(artist), album=album)
+        results = search_release(artist=strip_various_artist(artist), album=album)
         if results and not results[0].get("error"):
             return results
         return []

@@ -8,14 +8,30 @@
 import { IdentifyResult, CueMetadata, ReleaseDetails } from "@/lib/api";
 import { Choices } from "@/components/MetadataCompare";
 
+/** Per-track title decision: keep the CUE title when the user excluded this
+ * track (key "disc-position"), else fall back to the global provider-titles
+ * flag. */
+function titleResolver(
+  useProviderTitles: boolean,
+  titleExcluded: Record<string, boolean>,
+) {
+  return (disc: number, pos: number, providerTitle: string, cueTitle: string): string => {
+    const key = `${disc}-${pos}`;
+    const useProvider = key in titleExcluded ? !titleExcluded[key] : useProviderTitles;
+    return useProvider ? providerTitle : (cueTitle || providerTitle);
+  };
+}
+
 export function buildReleaseDetails(
   result: IdentifyResult,
   choices: Choices,
   cue: CueMetadata | null,
   useProviderTitles: boolean,
+  titleExcluded: Record<string, boolean> = {},
 ) {
   const chosen = (key: string): string =>
     choices[key]?.include ? choices[key].value : "";
+  const pickTitle = titleResolver(useProviderTitles, titleExcluded);
 
   // Group identified tracks by disc
   const byDisc = new Map<number, IdentifyResult["tracks"]>();
@@ -32,9 +48,7 @@ export function buildReleaseDetails(
       format: "CD",
       tracks: tracks.map((t, i) => {
         const cueTrack = cue?.tracks?.[t.position - 1];
-        const title = useProviderTitles
-          ? t.title
-          : (cueTrack?.title || t.title);
+        const title = pickTitle(position, t.position || i + 1, t.title, cueTrack?.title || "");
         return {
           position: t.position || i + 1,
           title,
@@ -65,6 +79,7 @@ export function buildReleaseDetails(
     catalog_number: chosen("catalog_number"),
     barcode: chosen("barcode") || (cue?.album?.barcode ?? ""),
     country: chosen("country"),
+    compilation: !!result.compilation,
     discs,
   };
 }
@@ -78,16 +93,18 @@ export function releaseDetailsFromEdition(
   choices: Choices,
   cue: CueMetadata | null,
   useProviderTitles: boolean,
+  titleExcluded: Record<string, boolean> = {},
 ) {
   const chosen = (key: string): string =>
     choices[key]?.include ? choices[key].value : "";
+  const pickTitle = titleResolver(useProviderTitles, titleExcluded);
 
   const discs = ed.discs.map((d) => ({
     position: d.position,
     format: d.format || "CD",
     tracks: d.tracks.map((t, i) => {
       const cueTrack = cue?.tracks?.[(t.position || i + 1) - 1];
-      const title = useProviderTitles ? t.title : (cueTrack?.title || t.title);
+      const title = pickTitle(d.position, t.position || i + 1, t.title, cueTrack?.title || "");
       return {
         position: t.position || i + 1,
         title,
@@ -113,6 +130,7 @@ export function releaseDetailsFromEdition(
     catalog_number: chosen("catalog_number") || ed.catalog_number || "",
     barcode: chosen("barcode") || ed.barcode || "",
     country: chosen("country") || ed.country || "",
+    compilation: !!ed.compilation,
     discs,
   };
 }

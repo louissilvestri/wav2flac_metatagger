@@ -224,4 +224,5 @@ def identify(
         "art_candidates": art_candidates,
         "ids": ids,
         "providers": providers_status,
+        "compilation": bool(mb_details and mb_details.get("compilation")),
     }

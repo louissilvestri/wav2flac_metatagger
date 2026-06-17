@@ -4,13 +4,16 @@
  * Each fact renders exactly once; the Review step owns all metadata display.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { api, IdentifyResult } from "@/lib/api";
+import { api, IdentifyResult, ReleaseCandidate } from "@/lib/api";
 import { useConvertStore } from "@/stores/convert";
 import { Panel, Button, Input, Field, Terminal, TermLine, Spinner, Tag, Checkbox, cx } from "@/components/ui";
 import { MetadataCompare, CompareRow, defaultChoices, asText } from "@/components/MetadataCompare";
 import { ArtPicker, ArtOption } from "@/components/ArtPicker";
+import { embeddedArtOption, candidateArtOptions, autoArtOption, noneArtOption } from "@/lib/artOptions";
+import { ManualSearch } from "@/components/ManualSearch";
+import { EditionPicker } from "@/components/EditionPicker";
 import { JobProgress } from "@/components/JobProgress";
 import { buildReleaseDetails, releaseDetailsFromEdition } from "@/lib/buildRelease";
 
@@ -282,35 +285,39 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 function buildRows(r: IdentifyResult, current: Record<string, string>): CompareRow[] {
-  return Object.keys(FIELD_LABELS)
-    .filter((key) => r.fields[key] || current[key])
-    .map((key) => ({
-      key,
-      label: FIELD_LABELS[key],
-      current: current[key] ?? "",
-      merged: r.fields[key],
-    }));
+  // Show EVERY field, even when both sides are blank, so the user can see
+  // exactly what metadata is missing.
+  return Object.keys(FIELD_LABELS).map((key) => ({
+    key,
+    label: FIELD_LABELS[key],
+    current: current[key] ?? "",
+    merged: r.fields[key],
+  }));
 }
 
 function ReviewStep() {
   const {
     scan, identifyResult: r, choices, setChoices, setStep,
     useProviderTitles, setUseProviderTitles, artChoiceId, setArtChoice,
-    editionId, editionDetails, setEdition,
+    editionId, editionDetails, setEdition, titleExcluded, setTitleExcluded,
   } = useConvertStore();
   const wizardFiles = useWizardFiles();
 
   // Candidate editions from every provider — the user picks which one to use.
+  // The search spec defaults to the rip folder (gives MB the disc ID), but a
+  // manual search overrides it with explicit artist/album terms.
+  type SearchSpec = { folder_path?: string; artist?: string; album?: string; track_count?: number };
+  const [searchSpec, setSearchSpec] = useState<SearchSpec>({ folder_path: scan?.folder });
   const candidates = useQuery({
-    queryKey: ["release-candidates", scan?.folder],
-    queryFn: () => api.releaseCandidates({ folder_path: scan?.folder }),
-    enabled: !!scan?.folder,
+    queryKey: ["release-candidates", searchSpec],
+    queryFn: () => api.releaseCandidates(searchSpec),
+    enabled: !!(searchSpec.folder_path || searchSpec.artist || searchSpec.album),
     staleTime: Infinity,
   });
 
   // Fetch the chosen edition's full tracklist on demand.
   const chooseEdition = useMutation({
-    mutationFn: (c: { provider: string; id: string }) => api.getRelease(c.id),
+    mutationFn: (c: ReleaseCandidate) => api.getRelease(c.id),
     onSuccess: (details, c) => {
       if (!details.error) setEdition(`${c.provider}:${c.id}`, details);
     },
@@ -336,26 +343,12 @@ function ReviewStep() {
   const rows = buildRows(r, cueValues(scan?.cue_metadata ?? null));
 
   const artOptions: ArtOption[] = [
-    ...(hasLocalArt ? [{
-      id: "local",
-      label: "Local (EAC)",
-      sublabel: localArt.data?.width
-        ? `${localArt.data.width}×${localArt.data.height}`
-        : "from rip folder",
-      thumbSrc: localArt.data?.data
-        ? `data:image/jpeg;base64,${localArt.data.data}`
-        : undefined,
-      badge: "Default",
-    }] : []),
-    { id: "auto", label: "Auto", sublabel: "highest resolution wins",
-      ...(hasLocalArt ? {} : { badge: "Default" }) },
-    ...r.art_candidates.map((a) => ({
-      id: `url:${a.url}`,
-      label: a.source,
-      sublabel: a.width ? `${a.width}×${a.height}` : (a.likes ? `${a.likes} likes` : ""),
-      thumbSrc: a.thumb_url || a.url,
-    })),
-    { id: "none", label: "No Art", sublabel: "skip embedding" },
+    ...(hasLocalArt
+      ? [embeddedArtOption("local", "Local (EAC)", localArt.data, "from rip folder", "Default")]
+      : []),
+    autoArtOption("highest resolution wins", hasLocalArt ? undefined : "Default"),
+    ...candidateArtOptions(r.art_candidates),
+    noneArtOption("skip embedding"),
   ];
 
   // Effective tracklist: the chosen edition's tracks override the auto-identified ones.
@@ -402,51 +395,33 @@ function ReviewStep() {
       </Panel>
 
       <Panel title="Edition">
+        <div className="mb-2">
+          <p className="mb-1 font-mono text-[0.66rem] text-muted">
+            Manual search — override the auto-detected terms:
+          </p>
+          <ManualSearch
+            defaultArtist={asText(r.fields.artist?.value ?? "") || (scan?.cue_metadata?.album?.artist ?? "")}
+            defaultAlbum={asText(r.fields.title?.value ?? "") || (scan?.cue_metadata?.album?.album ?? "")}
+            pending={candidates.isFetching}
+            onSearch={({ artist, album }) =>
+              setSearchSpec({ artist, album, track_count: scanned })}
+          />
+        </div>
         {candidates.isLoading && <Spinner label="searching all providers for editions…" />}
         {candidates.data && candidates.data.length === 0 && (
           <p className="font-mono text-xs text-muted">
-            No candidate releases found — the auto-identified tracklist will be used.
+            No candidate releases found — adjust the terms above, or the auto-identified tracklist will be used.
           </p>
         )}
         {candidates.data && candidates.data.length > 0 && (
-          <>
-            <p className="mb-2 font-mono text-[0.7rem] text-muted">
-              Pick the edition that matches your disc ({scanned} tracks). Track
-              counts come from the provider; “?” means unknown until selected.
-            </p>
-            <div className="max-h-56 space-y-1 overflow-y-auto">
-              {candidates.data.map((c) => {
-                const key = `${c.provider}:${c.id}`;
-                const active = key === activeId;
-                const countMatches = c.track_count > 0 && c.track_count === scanned;
-                return (
-                  <button
-                    key={key}
-                    disabled={chooseEdition.isPending}
-                    onClick={() => chooseEdition.mutate({ provider: c.provider, id: c.id })}
-                    className={cx(
-                      "flex w-full cursor-pointer items-center gap-2 border px-3 py-1.5 text-left font-mono text-[0.72rem]",
-                      "transition-colors hover:border-accent/60",
-                      active ? "border-accent box-glow" : "border-white/10",
-                    )}
-                  >
-                    <Tag tone={c.provider === "musicbrainz" ? "ok" : "warn"}>{c.provider}</Tag>
-                    <span className={cx("tabular-nums", countMatches ? "text-ok" : "text-muted")}>
-                      {c.track_count > 0 ? `${c.track_count} trk` : "? trk"}
-                    </span>
-                    <span className="text-muted">{c.date || "—"}</span>
-                    {c.country && <span className="text-muted">{c.country}</span>}
-                    {c.format && <span className="truncate text-accent-2">{c.format}</span>}
-                    <span className="ml-auto flex items-center gap-1.5">
-                      {c.recommended && <Tag tone="ok">Recommended</Tag>}
-                      {active && <span className="text-accent">●</span>}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            {chooseEdition.isPending && <Spinner label="loading edition tracklist…" />}
-          </>
+          <EditionPicker
+            candidates={candidates.data}
+            activeId={activeId}
+            expectedTracks={scanned}
+            pending={chooseEdition.isPending}
+            note={`Pick the edition that matches your disc (${scanned} tracks). Track counts come from the provider; “?” means unknown until selected.`}
+            onPick={(c) => chooseEdition.mutate(c)}
+          />
         )}
       </Panel>
 
@@ -454,26 +429,47 @@ function ReviewStep() {
         <ArtPicker options={artOptions} selectedId={artChoiceId} onSelect={setArtChoice} />
       </Panel>
 
-      <Panel title={`Tracks (${tracks.length} from ${trackSource})`}>
+      <Panel title={`Track titles (${tracks.length} from ${trackSource})`}>
         <div className="mb-2">
           <Checkbox
-            label="Use provider track titles (uncheck to keep CUE titles)"
+            label="Use provider/edition titles for all (uncheck to keep CUE titles)"
             checked={useProviderTitles}
-            onChange={(e) => setUseProviderTitles(e.target.checked)}
+            onChange={(e) => { setUseProviderTitles(e.target.checked); setTitleExcluded({}); }}
           />
         </div>
         <div className="max-h-72 overflow-y-auto">
-          <table className="w-full font-mono text-[0.78rem]">
+          <table className="w-full font-mono text-[0.76rem]">
+            <thead>
+              <tr className="border-b border-white/15 text-left text-[0.6rem] uppercase text-muted">
+                <th className="w-8 p-1.5" />
+                <th className="w-8 p-1.5">#</th>
+                <th className="p-1.5">CUE / current</th>
+                <th className="p-1.5">Provider / edition</th>
+              </tr>
+            </thead>
             <tbody>
-              {tracks.map((t) => (
-                <tr key={`${t.disc_number}-${t.position}`} className="border-b border-white/5">
-                  <td className="w-10 p-1.5 text-muted">{t.position}</td>
-                  <td className="p-1.5">{t.title}</td>
-                  <td className="p-1.5 text-right text-muted">
-                    {t.length_ms ? `${Math.floor(t.length_ms / 60000)}:${String(Math.floor((t.length_ms % 60000) / 1000)).padStart(2, "0")}` : ""}
-                  </td>
-                </tr>
-              ))}
+              {tracks.map((t) => {
+                const key = `${t.disc_number}-${t.position}`;
+                const cueTitle = scan?.cue_metadata?.tracks?.[(t.position || 1) - 1]?.title ?? "";
+                const useProvider = key in titleExcluded ? !titleExcluded[key] : useProviderTitles;
+                return (
+                  <tr key={key} className="border-b border-white/5">
+                    <td className="p-1.5 text-center">
+                      <input type="checkbox" className="size-3.5 accent-[#22d3ee]"
+                        checked={useProvider}
+                        onChange={(e) => setTitleExcluded({ ...titleExcluded, [key]: !e.target.checked })} />
+                    </td>
+                    <td className="p-1.5 text-muted">{t.position}</td>
+                    <td className="max-w-[230px] truncate p-1.5 text-muted" title={cueTitle}>
+                      {cueTitle || <span className="text-muted/50">—</span>}
+                    </td>
+                    <td className={cx("max-w-[230px] truncate p-1.5", useProvider ? "text-ok" : "text-muted")}
+                        title={t.title}>
+                      {t.title || <span className="text-muted/50">—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -487,7 +483,7 @@ function ReviewStep() {
 function ConvertStep() {
   const {
     scan, identifyResult: r, choices, useProviderTitles, artChoiceId,
-    editionDetails, jobId, setJobId, setStep, reset,
+    editionDetails, titleExcluded, jobId, setJobId, setStep, reset,
   } = useConvertStore();
   const wizardFiles = useWizardFiles();
 
@@ -495,8 +491,8 @@ function ConvertStep() {
     mutationFn: () => {
       const cue = scan?.cue_metadata ?? null;
       const release = editionDetails
-        ? releaseDetailsFromEdition(editionDetails, choices, cue, useProviderTitles)
-        : (r ? buildReleaseDetails(r, choices, cue, useProviderTitles) : null);
+        ? releaseDetailsFromEdition(editionDetails, choices, cue, useProviderTitles, titleExcluded)
+        : (r ? buildReleaseDetails(r, choices, cue, useProviderTitles, titleExcluded) : null);
       const options: Record<string, unknown> = {};
       if (artChoiceId === "none") options.embed_album_art = false;
       else if (artChoiceId === "local") options.art_source = "local";

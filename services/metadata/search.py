@@ -12,6 +12,7 @@ that MB only had as a 12-track release).
 """
 
 from config import load_settings
+from text_utils import strip_various_artist
 from services.metadata.aggregator import DEFAULT_ENABLED
 
 # Tie-break order when track counts are equal (or unknown).
@@ -33,12 +34,6 @@ def _candidate(provider, rid, title, artist, date, country="", fmt="",
         "disc_count": int(disc_count or 1),
         "recommended": False,
     }
-
-
-def _norm_va(artist: str | None) -> str:
-    if artist and artist.lower().strip() in ("various artists", "various"):
-        return ""
-    return artist or ""
 
 
 def rank_candidates(candidates: list[dict], track_count: int | None) -> list[dict]:
@@ -65,12 +60,32 @@ def rank_candidates(candidates: list[dict], track_count: int | None) -> list[dic
 def find_release_candidates(artist: str = "", album: str = "",
                             track_count: int | None = None,
                             disc_id: str | None = None,
+                            title: str = "",
                             settings: dict | None = None) -> list[dict]:
     """Search every enabled edition-capable provider and return a ranked,
-    de-duplicated candidate list for the user to choose from."""
+    de-duplicated candidate list for the user to choose from.
+
+    When `album` is blank but `title` is given, this becomes a SONG search:
+    find the albums a recording appears on (so the user can hunt for a track's
+    original album without knowing the album name)."""
     settings = settings or load_settings()
     enabled = set(settings.get("metadata_providers_enabled", DEFAULT_ENABLED))
     out: list[dict] = []
+
+    # ── Song search: no album, find which albums contain this track ──────────
+    if not album.strip() and title.strip():
+        # MusicBrainz recording search is the only provider that answers
+        # "which albums is this song on?". Reuse the shared implementation.
+        from library_manager import find_original_album
+        for c in find_original_album(artist, title):
+            out.append(_candidate(
+                "musicbrainz", c.get("release_id"), c.get("album"), c.get("artist"),
+                c.get("first_release_date") or c.get("date"), c.get("country")))
+        deduped, seen = [], set()
+        for c in out:
+            if c["id"] and c["id"] not in seen:
+                seen.add(c["id"]); deduped.append(c)
+        return rank_candidates(deduped, track_count)
 
     if "musicbrainz" in enabled:
         # Exact disc-ID releases first (when a CUE gave us a disc ID).
@@ -102,7 +117,7 @@ def find_release_candidates(artist: str = "", album: str = "",
     if "discogs" in enabled:
         try:
             from discogs_lookup import search_release as dg_search
-            for r in (dg_search(artist=_norm_va(artist) or None,
+            for r in (dg_search(artist=strip_various_artist(artist) or None,
                                 album=album or None) or []):
                 if r.get("error"):
                     break

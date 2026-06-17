@@ -95,7 +95,8 @@ def _scan_single_file(flac_path: Path, root: Path) -> dict | None:
     artist = tags.get("ARTIST", "")
     albumartist = tags.get("ALBUMARTIST", "")
     album = tags.get("ALBUM", "")
-    is_comp = _is_compilation(artist, albumartist, album)
+    explicit_comp = _explicit_compilation(tags)
+    is_comp = _is_compilation(artist, albumartist, album, tags)
 
     return {
         "path": str(flac_path),
@@ -121,18 +122,47 @@ def _scan_single_file(flac_path: Path, root: Path) -> dict | None:
         "missing_fields": [f for f, info in completeness["fields"].items()
                           if info["status"] != "filled"],
         "is_compilation": is_comp,
+        "explicit_compilation": explicit_comp,  # True/False = user override; None = heuristic
         "all_tags": tags,
     }
 
 
-def _is_compilation(artist: str, albumartist: str, album: str) -> bool:
-    """Detect if a track belongs to a compilation album based on tag keywords.
-
-    Only checks albumartist and album name for compilation indicators.
-    Does NOT use artist≠albumartist mismatch (too many false positives for
-    bands with songwriter credits, featured artists, etc.).
-    Multi-artist detection is handled at the album level in group_library_by_album.
+def _explicit_compilation(tags: dict) -> bool | None:
+    """Authoritative compilation signal from tags, BOTH ways:
+    True  — COMPILATION=1 (Picard/iTunes) or a release-type containing
+            "compilation" (catches single-artist greatest-hits like "Ramones Mania").
+    False — COMPILATION=0, an explicit "not a compilation" override.
+    None  — no explicit signal; fall back to keyword/multi-artist heuristics.
     """
+    val = str(tags.get("COMPILATION", "")).strip().lower()
+    if val in ("1", "true", "yes"):
+        return True
+    if val in ("0", "false", "no"):
+        return False
+    album_type = " ".join(str(tags.get(k, "")) for k in (
+        "RELEASETYPE", "ALBUMTYPE", "MUSICBRAINZ_ALBUMTYPE",
+    )).lower()
+    if "compilation" in album_type:
+        return True
+    return None
+
+
+def _is_compilation(artist: str, albumartist: str, album: str,
+                    tags: dict | None = None) -> bool:
+    """Detect if a track belongs to a compilation album.
+
+    Order of signals:
+    1. An explicit tag (see _explicit_compilation) — authoritative both ways.
+    2. Title/album-artist keywords ("greatest hits", "best of", "anthology"…).
+    Multi-artist detection is handled at the album level in group_library_by_album.
+
+    NOTE: artist≠albumartist mismatch is intentionally NOT used here (too many
+    false positives for bands with songwriter credits, featured artists, etc.).
+    """
+    explicit = _explicit_compilation(tags or {})
+    if explicit is not None:
+        return explicit
+
     check_strings = [
         albumartist.lower(),
         album.lower(),
@@ -201,7 +231,9 @@ def group_library_by_album(files: list[dict]) -> list[dict]:
 
         # Multi-artist detection: if 3+ distinct track artists differ from the
         # album artist, this is likely a compilation even if keywords didn't match.
-        if not group["is_compilation"] and group["track_count"] >= 3:
+        # Skipped when the user explicitly tagged it "not a compilation".
+        explicitly_not_comp = any(f.get("explicit_compilation") is False for f in group["files"])
+        if not group["is_compilation"] and not explicitly_not_comp and group["track_count"] >= 3:
             aa_norm = _normalize_for_compare(group["albumartist"])
             distinct_artists = set()
             for f in group["files"]:

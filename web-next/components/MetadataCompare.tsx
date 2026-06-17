@@ -70,18 +70,14 @@ export function MetadataCompare({ rows, choices, onChange }: {
       <tbody>
         {rows.map((row) => {
           const choice = choices[row.key];
-          const changed = !!choice?.value && choice.value !== row.current;
+          const hasValue = !!choice?.value;
+          const changed = hasValue && choice.value !== row.current;
           return (
-            <tr
-              key={row.key}
-              className={cx("border-b border-white/5",
-                !changed && "opacity-50")}
-            >
+            <tr key={row.key} className="border-b border-white/5">
               <td className="p-1.5 text-center">
                 <input
                   type="checkbox"
                   className="size-3.5 accent-[#22d3ee]"
-                  disabled={!changed}
                   checked={!!choice?.include}
                   onChange={(e) => set(row.key, { include: e.target.checked })}
                 />
@@ -91,12 +87,15 @@ export function MetadataCompare({ rows, choices, onChange }: {
                 {row.current || <span className="text-muted/50">—</span>}
               </td>
               <td className={cx("max-w-[220px] truncate p-1.5",
-                  changed ? (choice?.include ? "text-ok" : "text-muted") : "text-muted/50")}
+                  !hasValue ? "text-muted/50"
+                    : choice?.include ? "text-ok"
+                    : "text-muted",
+                  changed && choice?.include && "font-medium")}
                   title={choice?.value}>
-                {changed ? choice?.value : "same"}
+                {hasValue ? choice.value : <span title="provider had no value">— keep current —</span>}
               </td>
               <td className="p-1.5">
-                {changed && row.merged && (
+                {hasValue && row.merged && (
                   row.merged.candidates.length > 1 ? (
                     <select
                       className="rounded-sm border border-white/15 bg-surface px-1 py-0.5 text-[0.66rem] text-text"

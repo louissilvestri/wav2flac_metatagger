@@ -2,10 +2,12 @@
 
 import re
 import shutil
-import unicodedata
 from pathlib import Path
 
 from config import load_settings
+# Single shared implementation — folder/artist matching uses the same fold as
+# the rest of the app (see text_utils for the fold_for_compare/fold_loose split).
+from text_utils import fold_loose as _normalize_for_compare
 
 
 def sanitize_filename(name: str) -> str:
@@ -16,26 +18,6 @@ def sanitize_filename(name: str) -> str:
     name = name.strip(". ")
     name = re.sub(r"\s+", " ", name)
     return name[:200]  # Limit length
-
-
-def _normalize_for_compare(name: str) -> str:
-    """Normalize a folder/artist name for fuzzy comparison.
-
-    Strips accents, lowercases, removes punctuation, collapses whitespace,
-    and handles 'The' prefix.
-    """
-    # Unicode normalize and strip accents
-    s = unicodedata.normalize("NFKD", name)
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    s = s.lower()
-    # Remove common punctuation and special chars
-    s = re.sub(r"[^a-z0-9\s]", "", s)
-    # Collapse whitespace
-    s = re.sub(r"\s+", " ", s).strip()
-    # Handle 'the' prefix: "the beatles" == "beatles the" == "beatles"
-    s = re.sub(r"^the\s+", "", s)
-    s = re.sub(r"\s+the$", "", s)
-    return s
 
 
 def find_existing_folder(parent: Path, target_name: str) -> str | None:

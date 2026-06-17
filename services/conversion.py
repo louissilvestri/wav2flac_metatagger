@@ -54,6 +54,10 @@ def _build_track_metadata(release_details: dict | None, file_info: dict,
         metadata["tracknumber"] = str(track_number)
     if not metadata.get("discnumber"):
         metadata["discnumber"] = str(disc_number)
+    # Stamp the compilation flag so the library reliably detects it later,
+    # even for single-artist greatest-hits sets with no title keyword.
+    if release_details and release_details.get("compilation"):
+        metadata["compilation"] = "1"
     return metadata
 
 

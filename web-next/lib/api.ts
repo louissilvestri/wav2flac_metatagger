@@ -86,6 +86,7 @@ export interface IdentifyResult {
   art_candidates: ArtCandidate[];
   ids: Record<string, string>;
   providers: Record<string, string>;
+  compilation?: boolean;
 }
 
 export interface IdentifiedTrack {
@@ -188,6 +189,7 @@ export interface ReleaseDetails {
   catalog_number?: string;
   barcode?: string;
   country?: string;
+  compilation?: boolean;
   release_group_id?: string;
   error?: string;
   discs: { position: number; format?: string; tracks: {
@@ -262,7 +264,7 @@ export const api = {
   }) => post<IdentifyResult>("/api/metadata/identify", req),
 
   releaseCandidates: (req: {
-    artist?: string; album?: string; track_count?: number;
+    artist?: string; album?: string; title?: string; track_count?: number;
     disc_id?: string; folder_path?: string;
   }) => post<ReleaseCandidate[]>("/api/metadata/release-candidates", req),
 

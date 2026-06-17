@@ -48,6 +48,26 @@ def test_flagged_as_compilation(artist, albumartist, album):
         f"{albumartist} - {album} should be flagged as compilation"
 
 
+class TestCompilationTag:
+    """Explicit tags are authoritative — catch single-artist greatest-hits sets
+    (e.g. 'Ramones Mania') that have no give-away keyword in the title."""
+
+    def test_no_signal_without_tag(self):
+        assert not _is_compilation("Ramones", "Ramones", "Ramones Mania")
+
+    def test_compilation_tag_flag(self):
+        assert _is_compilation("Ramones", "Ramones", "Ramones Mania",
+                               {"COMPILATION": "1"})
+
+    def test_musicbrainz_album_type(self):
+        assert _is_compilation("Ramones", "Ramones", "Ramones Mania",
+                               {"MUSICBRAINZ_ALBUMTYPE": "Album; Compilation"})
+
+    def test_compilation_tag_zero_not_flagged(self):
+        assert not _is_compilation("Ramones", "Ramones", "Ramones Mania",
+                                   {"COMPILATION": "0"})
+
+
 def _file(artist, albumartist, album, title, track, **over):
     entry = {
         "path": f"X:\\{albumartist}\\{album}\\{track:02d} - {title}.flac",

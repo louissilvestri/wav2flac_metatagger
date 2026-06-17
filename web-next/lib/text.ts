@@ -19,10 +19,24 @@ export function normalizePunctuation(s: string): string {
     (ch) => PUNCT[ch] ?? ch);
 }
 
-/** Fold for equality/contains checks: punctuation normalized, lowercased,
- * whitespace collapsed. Use on BOTH haystack and needle. */
+/** Fold accented letters to their base form (Motörhead → Motorhead). For
+ * COMPARISON only — never for queries (providers index the accents). */
+export function stripAccents(s: string): string {
+  return (s || "").normalize("NFKD").replace(/\p{Diacritic}/gu, "");
+}
+
+/** Fold for equality/contains checks: punctuation normalized, accents stripped,
+ * lowercased, separator punctuation unified, whitespace collapsed. Use on BOTH
+ * sides. Mirrors the backend text_utils.fold_for_compare.
+ *
+ * Providers disagree on track-list separators — "Whine & Grine / Stand Down
+ * Margaret" vs "… , …" vs "… ; …" — so comma / slash / semicolon are all
+ * folded to a single space, otherwise the same title fails to match. */
 export function foldForCompare(s: string): string {
-  return normalizePunctuation(s || "").toLowerCase().split(/\s+/).join(" ").trim();
+  return stripAccents(normalizePunctuation(s || ""))
+    .toLowerCase()
+    .replace(/[\/,;]+/g, " ")
+    .split(/\s+/).join(" ").trim();
 }
 
 /** Prepare an artist name for a provider search:
