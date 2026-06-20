@@ -13,7 +13,7 @@ export default function HistoryPage() {
 
   return (
     <div className="space-y-3">
-      <h1 className="font-display text-2xl text-accent glow-accent">History</h1>
+      <h1 className="font-display text-2xl text-text">History</h1>
 
       {s && (
         <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
@@ -25,8 +25,16 @@ export default function HistoryPage() {
       )}
 
       <Panel title="Conversion Log">
-        {history.isLoading && <Spinner />}
-        {history.data && (
+        {history.isLoading && <Spinner label="loading history…" />}
+        {history.isError && (
+          <p className="font-mono text-sm text-alert">
+            Failed to load history: {String((history.error as Error)?.message ?? history.error)}
+          </p>
+        )}
+        {history.data && history.data.length === 0 && (
+          <p className="font-mono text-sm text-muted">No conversions yet.</p>
+        )}
+        {history.data && history.data.length > 0 && (
           <div className="max-h-[70vh] overflow-y-auto">
             <table className="w-full font-mono text-[0.74rem]">
               <thead className="sticky top-0 bg-surface">

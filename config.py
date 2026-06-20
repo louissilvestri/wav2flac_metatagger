@@ -13,12 +13,59 @@ APP_NAME = "Music Manager"
 APP_VERSION = "2.0.0-dev"
 
 
-def get_secret(name: str, default: str = "") -> str:
-    """Read an API key/secret from the environment (.env)."""
-    return os.environ.get(name, default)
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "MusicManager"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
+SECRETS_FILE = CONFIG_DIR / "secrets.json"
 DB_FILE = CONFIG_DIR / "activity.db"
+
+# Which metadata providers REQUIRE an API key, and the secret name(s) each needs.
+# Providers not listed here (MusicBrainz, Cover Art Archive, iTunes, Deezer) work
+# with no key. AcoustID also needs the fpcalc binary, checked separately.
+PROVIDER_KEYS = {
+    "discogs": ["DISCOGS_TOKEN"],
+    "lastfm": ["LASTFM_API_KEY"],
+    "acoustid": ["ACOUSTID_API_KEY"],
+    "fanarttv": ["FANARTTV_API_KEY"],
+}
+
+
+def load_secrets() -> dict:
+    """User-entered API keys, persisted in the per-user config dir."""
+    if SECRETS_FILE.exists():
+        try:
+            with open(SECRETS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def get_secret(name: str, default: str = "") -> str:
+    """Read an API key/secret: environment (.env) wins, then the saved
+    secrets file (entered via Settings)."""
+    return os.environ.get(name) or load_secrets().get(name) or default
+
+
+def save_secrets(updates: dict) -> None:
+    """Merge key updates into the secrets file. An empty value clears that key."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    current = load_secrets()
+    for name, value in updates.items():
+        if value:
+            current[name] = value
+        else:
+            current.pop(name, None)
+    with open(SECRETS_FILE, "w", encoding="utf-8") as f:
+        json.dump(current, f, indent=2, ensure_ascii=False)
+
+
+def provider_requires_key(provider: str) -> bool:
+    return provider in PROVIDER_KEYS
+
+
+def provider_has_keys(provider: str) -> bool:
+    """True if a provider needs no key, or all its required keys are present."""
+    return all(get_secret(n) for n in PROVIDER_KEYS.get(provider, []))
 
 DEFAULT_SETTINGS = {
     "input_folder": "",
@@ -27,6 +74,7 @@ DEFAULT_SETTINGS = {
     "compression_level": 8,
     "verify_encoding": True,
     "embed_album_art": True,
+    "add_replay_gain": True,
     "art_max_size": 1200,
     "art_quality": 90,
     "plex_folder_format": "{artist}/{album} ({year})",
@@ -34,7 +82,7 @@ DEFAULT_SETTINGS = {
     "multi_disc_style": "subfolder",
     "auto_lookup_metadata": True,
     "metadata_provider": "musicbrainz",  # "musicbrainz" or "discogs"
-    "musicbrainz_user_agent": f"MusicManager/{APP_VERSION} (louissilvestri@hotmail.com)",
+    "musicbrainz_user_agent": f"MusicManager/{APP_VERSION}",
     "discogs_token": "",
     "delete_wav_after_convert": False,
     "log_level": "INFO",

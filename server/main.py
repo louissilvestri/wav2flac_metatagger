@@ -94,6 +94,39 @@ def autodetect_flac():
     return {"path": find_flac_exe() or ""}
 
 
+# ─── Provider API keys ───────────────────────────────────────────────────────────
+
+@app.get("/api/secrets")
+def get_secrets():
+    """Per-provider key status for the Settings editor. Values are returned so
+    the user can view/edit their own keys locally (the UI masks them)."""
+    from config import PROVIDER_KEYS, get_secret, provider_has_keys
+    return {
+        provider: {
+            "has_keys": provider_has_keys(provider),
+            "keys": [{"name": n, "value": get_secret(n)} for n in names],
+        }
+        for provider, names in PROVIDER_KEYS.items()
+    }
+
+
+class SecretsRequest(BaseModel):
+    values: dict  # {SECRET_NAME: value}; empty value clears the key
+
+
+@app.put("/api/secrets")
+def put_secrets(req: SecretsRequest):
+    from config import save_secrets
+    save_secrets(req.values)
+    return {"success": True}
+
+
+@app.post("/api/secrets/test/{provider}")
+def test_secret(provider: str):
+    from services.metadata.keytest import test_provider
+    return test_provider(provider)
+
+
 # ─── Convert: scan + lookup ─────────────────────────────────────────────────────
 
 class ScanRequest(BaseModel):
@@ -163,6 +196,8 @@ class ConvertRequest(BaseModel):
 
 @app.post("/api/convert")
 def start_convert(req: ConvertRequest):
+    if not req.files:
+        raise HTTPException(400, "No files to convert")
     if job_manager.is_running("convert"):
         raise HTTPException(409, "A conversion is already running")
 
@@ -399,6 +434,32 @@ def library_delete_file(req: PathRequest):
 @app.get("/api/library/embedded-art")
 def library_embedded_art(path: str):
     return get_embedded_art(path)
+
+
+class UpdateTagsRequest(BaseModel):
+    path: str
+    changes: dict  # {TAG_NAME: value|null}; null/"" deletes that tag
+
+
+@app.put("/api/library/tags")
+def library_update_tags(req: UpdateTagsRequest):
+    """Advanced tag editor: set/delete arbitrary Vorbis comments on one file."""
+    output_folder = load_settings().get("output_folder", "")
+    result = library_service.update_track_tags(req.path, req.changes, output_folder)
+    if not result.get("success"):
+        raise HTTPException(400, result.get("error", "Failed to update tags"))
+    return result
+
+
+class ReplayGainRequest(BaseModel):
+    paths: list[str]
+
+
+@app.post("/api/library/replay-gain")
+def library_replay_gain(req: ReplayGainRequest):
+    """Compute ReplayGain (loudness) tags for the given library files."""
+    output_folder = load_settings().get("output_folder", "")
+    return library_service.add_replay_gain_paths(req.paths, output_folder)
 
 
 @app.get("/api/library/original-album")

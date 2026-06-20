@@ -6,9 +6,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { api, IdentifyResult, ReleaseCandidate } from "@/lib/api";
+import { api, IdentifyResult, ReleaseCandidate, ReleaseDetails, FieldValue } from "@/lib/api";
 import { useConvertStore } from "@/stores/convert";
-import { Panel, Button, Input, Field, Terminal, TermLine, Spinner, Tag, Checkbox, cx } from "@/components/ui";
+import { Panel, Button, Input, Field, Terminal, TermLine, Spinner, Tag, Checkbox, PendingSummary, useToast, cx } from "@/components/ui";
 import { MetadataCompare, CompareRow, defaultChoices, asText } from "@/components/MetadataCompare";
 import { ArtPicker, ArtOption } from "@/components/ArtPicker";
 import { embeddedArtOption, candidateArtOptions, autoArtOption, noneArtOption } from "@/lib/artOptions";
@@ -29,13 +29,13 @@ export default function ConvertPage() {
   return (
     <div className="space-y-3">
       <header className="flex items-center gap-2">
-        <h1 className="font-display mr-4 text-2xl text-accent glow-accent">Convert</h1>
+        <h1 className="font-display mr-4 text-2xl text-text">Convert</h1>
         {STEPS.map((s) => (
           <span
             key={s.id}
             className={cx(
-              "rounded px-3 py-1 font-display text-[0.72rem]",
-              step === s.id ? "bg-accent-2 text-bg" : "text-muted",
+              "rounded-full px-3 py-1 text-[0.72rem]",
+              step === s.id ? "bg-accent text-accent-ink" : "text-muted",
             )}
           >
             {s.label}
@@ -95,11 +95,11 @@ function SourceStep() {
     <div className="space-y-3">
       <Panel title="Input Folder">
         <div className="flex items-end gap-2">
-          <Field label="Folder with WAV + CUE from EAC" className="flex-1">
+          <Field label="Folder with WAV files (CUE optional)" className="flex-1">
             <Input
               value={effectiveFolder}
               onChange={(e) => setFolder(e.target.value)}
-              placeholder="C:\Users\...\EAC_Rips"
+              placeholder="C:\Music\Input"
             />
           </Field>
           <Button variant="ghost" onClick={async () => {
@@ -121,11 +121,11 @@ function SourceStep() {
                 key={g.album}
                 onClick={() => setAlbumGroup(g.album)}
                 className={cx(
-                  "chamfer cursor-pointer border px-3 py-1.5 font-mono text-[0.74rem]",
-                  "transition-[box-shadow] duration-[240ms]",
+                  "cursor-pointer rounded-[var(--radius)] border px-3 py-1.5 font-mono text-[0.74rem]",
+                  "transition-[background,border-color] duration-[250ms]",
                   albumGroup === g.album
-                    ? "border-accent bg-accent text-bg"
-                    : "border-accent/30 text-accent hover:box-glow",
+                    ? "border-accent bg-accent text-accent-ink"
+                    : "border-border text-text hover:border-accent",
                 )}
               >
                 {g.artist ? `${g.artist} — ` : ""}{g.album || "Unknown"}{" "}
@@ -284,14 +284,41 @@ const FIELD_LABELS: Record<string, string> = {
   label: "Label", catalog_number: "Catalog #", barcode: "Barcode", country: "Country",
 };
 
-function buildRows(r: IdentifyResult, current: Record<string, string>): CompareRow[] {
+// The chosen edition's values mapped onto the album-field keys. Once an edition
+// is picked it is the source of truth, so its values become the primary
+// candidate; the identify values stay selectable behind them.
+function editionFieldValues(ed: ReleaseDetails): Record<string, string> {
+  return {
+    title: ed.title ?? "",
+    artist: ed.artist ?? "",
+    original_date: ed.first_release_date || ed.date || "",
+    release_date: ed.date || "",
+    genre: ed.genre ?? "",
+    label: ed.label ?? "",
+    catalog_number: ed.catalog_number ?? "",
+    barcode: ed.barcode ?? "",
+    country: ed.country ?? "",
+  };
+}
+
+function mergedWithEdition(base: FieldValue | undefined, edValue: string, edSource: string): FieldValue | undefined {
+  if (!edValue) return base;
+  const candidates = [{ value: edValue, source: edSource } as { value: string | string[]; source: string }];
+  if (base) for (const c of base.candidates) if (asText(c.value) !== edValue) candidates.push(c);
+  return { value: edValue, source: edSource, candidates };
+}
+
+function buildRows(r: IdentifyResult, current: Record<string, string>,
+                   ed?: ReleaseDetails | null, edProvider = "edition"): CompareRow[] {
   // Show EVERY field, even when both sides are blank, so the user can see
-  // exactly what metadata is missing.
+  // exactly what metadata is missing. When an edition is chosen its values lead
+  // (edition-first); otherwise the merged identify values do.
+  const edVals = ed ? editionFieldValues(ed) : {};
   return Object.keys(FIELD_LABELS).map((key) => ({
     key,
     label: FIELD_LABELS[key],
     current: current[key] ?? "",
-    merged: r.fields[key],
+    merged: ed ? mergedWithEdition(r.fields[key], edVals[key] ?? "", edProvider) : r.fields[key],
   }));
 }
 
@@ -300,8 +327,14 @@ function ReviewStep() {
     scan, identifyResult: r, choices, setChoices, setStep,
     useProviderTitles, setUseProviderTitles, artChoiceId, setArtChoice,
     editionId, editionDetails, setEdition, titleExcluded, setTitleExcluded,
+    compilation, setCompilation,
   } = useConvertStore();
   const wizardFiles = useWizardFiles();
+
+  // Whether a successful conversion will delete the source WAV/CUE/art, so the
+  // Review checkpoint can disclose that consequence before the user commits.
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
+  const willDeleteSources = settings.data?.delete_wav_after_convert === true;
 
   // Candidate editions from every provider — the user picks which one to use.
   // The search spec defaults to the rip folder (gives MB the disc ID), but a
@@ -315,11 +348,24 @@ function ReviewStep() {
     staleTime: Infinity,
   });
 
-  // Fetch the chosen edition's full tracklist on demand.
+  // Fetch the chosen edition's full tracklist on demand. The edition is the
+  // source of truth, so picking one re-seeds the album-metadata choices below
+  // it — and because those fields render under the Edition panel, the change is
+  // visible (no silent upstream mutation).
   const chooseEdition = useMutation({
     mutationFn: (c: ReleaseCandidate) => api.getRelease(c.id),
     onSuccess: (details, c) => {
-      if (!details.error) setEdition(`${c.provider}:${c.id}`, details);
+      if (details.error || !r) return;
+      setEdition(`${c.provider}:${c.id}`, details);
+      const edRows = buildRows(r, cueValues(scan?.cue_metadata ?? null), details, c.provider);
+      const ch = defaultChoices(edRows);
+      // The user picked this edition deliberately — default every real change to
+      // checked so its values actually apply.
+      for (const row of edRows) {
+        const v = ch[row.key]?.value ?? "";
+        if (ch[row.key]) ch[row.key].include = !!v && v !== row.current;
+      }
+      setChoices(ch);
     },
   });
 
@@ -340,11 +386,12 @@ function ReviewStep() {
   }, [hasLocalArt, artChoiceId, setArtChoice]);
 
   if (!r) return null;
-  const rows = buildRows(r, cueValues(scan?.cue_metadata ?? null));
+  const editionProvider = editionId?.split(":")[0] ?? "edition";
+  const rows = buildRows(r, cueValues(scan?.cue_metadata ?? null), editionDetails, editionProvider);
 
   const artOptions: ArtOption[] = [
     ...(hasLocalArt
-      ? [embeddedArtOption("local", "Local (EAC)", localArt.data, "from rip folder", "Default")]
+      ? [embeddedArtOption("local", "Local folder", localArt.data, "from input folder", "Default")]
       : []),
     autoArtOption("highest resolution wins", hasLocalArt ? undefined : "Default"),
     ...candidateArtOptions(r.art_candidates),
@@ -369,32 +416,35 @@ function ReviewStep() {
   const scanned = wizardFiles.length;
   const discCount = Math.max(1, ...tracks.map((t) => t.disc_number || 1));
 
-  return (
-    <div className="space-y-3">
-      <Panel
-        title="Metadata Review"
-        actions={
-          <>
-            <Button variant="ghost" onClick={() => setStep("identify")}>← Back</Button>
-            <Button variant="solid" onClick={() => setStep("convert")}>Convert →</Button>
-          </>
-        }
-      >
-        <MetadataCompare rows={rows} choices={choices} onChange={setChoices} />
-        {matched !== scanned && (
-          <p className="mt-2 font-mono text-xs text-accent-2">
-            ⚠ release has {matched} tracks; folder has {scanned} files
-          </p>
-        )}
-        {discCount > 1 && (
-          <p className="mt-2 font-mono text-xs text-muted">
-            Multi-disc release ({discCount} discs) — files map to discs in sequence
-            {matched === scanned ? "" : "; counts must match for disc mapping"}.
-          </p>
-        )}
-      </Panel>
+  // Pending-changes readout for the footer (always visible at the commit point).
+  const fieldChanges = rows.filter((row) => {
+    const c = choices[row.key];
+    return !!c?.include && !!c.value && c.value !== row.current;
+  }).length;
+  const titleChanges = tracks.filter((t) => {
+    const key = `${t.disc_number}-${t.position}`;
+    const useProvider = key in titleExcluded ? !titleExcluded[key] : useProviderTitles;
+    return useProvider && !!t.title;
+  }).length;
+  const artLabel = artOptions.find((o) => o.id === artChoiceId)?.label;
 
-      <Panel title="Edition">
+  const albumArtist = choices.artist?.value || asText(r.fields.artist?.value ?? "") || "?";
+  const albumTitle = choices.title?.value || asText(r.fields.title?.value ?? "") || "?";
+
+  return (
+    <div className="space-y-3 pb-2">
+      {/* Context — what we're reviewing, before any controls. */}
+      <p className="font-mono text-xs text-muted">
+        Reviewing <span className="text-text">{albumArtist} — {albumTitle}</span>
+        {" · "}{scanned} files · identified via {r.identity.method}
+      </p>
+
+      {/* 1 · Edition (source) — drives everything below it. */}
+      <Panel title="Edition — the source">
+        <p className="mb-2 text-sm text-muted">
+          Pick the release this disc is from. Your choice fills in the album fields, track titles, and
+          art shown below — change it and watch them update.
+        </p>
         <div className="mb-2">
           <p className="mb-1 font-mono text-[0.66rem] text-muted">
             Manual search — override the auto-detected terms:
@@ -425,10 +475,35 @@ function ReviewStep() {
         )}
       </Panel>
 
-      <Panel title="Album Art">
-        <ArtPicker options={artOptions} selectedId={artChoiceId} onSelect={setArtChoice} />
+      {/* 2 · Album metadata — re-seeded by the edition above. */}
+      <Panel title="Album metadata">
+        {editionDetails && (
+          <p aria-live="polite" className="mb-1 text-xs text-accent">
+            Fields updated from the {editionProvider} edition.
+          </p>
+        )}
+        <MetadataCompare rows={rows} choices={choices} onChange={setChoices} />
+        {matched !== scanned && (
+          <p className="mt-2 font-mono text-xs text-accent-2">
+            ⚠ release has {matched} tracks; folder has {scanned} files
+          </p>
+        )}
+        {discCount > 1 && (
+          <p className="mt-2 font-mono text-xs text-muted">
+            Multi-disc release ({discCount} discs) — files map to discs in sequence
+            {matched === scanned ? "" : "; counts must match for disc mapping"}.
+          </p>
+        )}
+        <div className="mt-3 border-t border-border pt-3">
+          <Checkbox
+            label={`Mark as compilation${(editionDetails?.compilation ?? r.compilation) ? " (auto-detected)" : ""}`}
+            checked={compilation ?? !!(editionDetails?.compilation ?? r.compilation)}
+            onChange={(e) => setCompilation(e.target.checked)}
+          />
+        </div>
       </Panel>
 
+      {/* 3 · Track titles. */}
       <Panel title={`Track titles (${tracks.length} from ${trackSource})`}>
         <div className="mb-2">
           <Checkbox
@@ -455,7 +530,7 @@ function ReviewStep() {
                 return (
                   <tr key={key} className="border-b border-white/5">
                     <td className="p-1.5 text-center">
-                      <input type="checkbox" className="size-3.5 accent-[#22d3ee]"
+                      <input type="checkbox" className="size-3.5 accent-accent"
                         checked={useProvider}
                         onChange={(e) => setTitleExcluded({ ...titleExcluded, [key]: !e.target.checked })} />
                     </td>
@@ -474,6 +549,27 @@ function ReviewStep() {
           </table>
         </div>
       </Panel>
+
+      {/* 4 · Album art. */}
+      <Panel title="Album art">
+        <ArtPicker options={artOptions} selectedId={artChoiceId} onSelect={setArtChoice} />
+      </Panel>
+
+      {/* 5 · Commit — sticky so the primary action and pending summary stay in view. */}
+      <div className="sticky bottom-0 -mx-1 rounded-[var(--radius)] border border-border bg-surface px-4 py-3 shadow-[var(--shadow)]">
+        {willDeleteSources && (
+          <p className="mb-2 font-mono text-xs text-accent-2">
+            ⚠ Source WAV/CUE/art will be deleted after a verified conversion (per Settings).
+          </p>
+        )}
+        <div className="flex items-center justify-between gap-3">
+          <PendingSummary fields={fieldChanges} tracks={titleChanges} art={artLabel} />
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={() => setStep("identify")}>← Back</Button>
+            <Button variant="solid" onClick={() => setStep("convert")}>Convert →</Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -483,9 +579,10 @@ function ReviewStep() {
 function ConvertStep() {
   const {
     scan, identifyResult: r, choices, useProviderTitles, artChoiceId,
-    editionDetails, titleExcluded, jobId, setJobId, setStep, reset,
+    editionDetails, titleExcluded, compilation, jobId, setJobId, setStep, reset,
   } = useConvertStore();
   const wizardFiles = useWizardFiles();
+  const toast = useToast();
 
   const start = useMutation({
     mutationFn: () => {
@@ -493,6 +590,8 @@ function ConvertStep() {
       const release = editionDetails
         ? releaseDetailsFromEdition(editionDetails, choices, cue, useProviderTitles, titleExcluded)
         : (r ? buildReleaseDetails(r, choices, cue, useProviderTitles, titleExcluded) : null);
+      // Apply the user's compilation choice (null = keep the auto-detected flag).
+      if (release && compilation !== null) release.compilation = compilation;
       const options: Record<string, unknown> = {};
       if (artChoiceId === "none") options.embed_album_art = false;
       else if (artChoiceId === "local") options.art_source = "local";
@@ -536,11 +635,12 @@ function ConvertStep() {
   // automatically so "Convert →" and "Start" are a single click.
   const autoStarted = useRef(false);
   useEffect(() => {
-    if (!autoStarted.current && !jobId && start.isIdle) {
+    // Never auto-fire with no files — an empty run would trigger source cleanup.
+    if (!autoStarted.current && !jobId && start.isIdle && wizardFiles.length > 0) {
       autoStarted.current = true;
       start.mutate();
     }
-  }, [jobId, start]);
+  }, [jobId, start, wizardFiles.length]);
 
   return (
     <div className="space-y-3">
@@ -561,11 +661,17 @@ function ConvertStep() {
           <p className="mb-2 font-mono text-sm text-alert">{String(start.error)}</p>
         )}
         {jobId
-          ? <JobProgress jobId={jobId} />
+          ? <JobProgress jobId={jobId} onDone={(job) => {
+              const done = job.result?.completed ?? 0;
+              const failed = job.result?.failed ?? 0;
+              toast(failed > 0
+                ? { tone: "error", title: "Conversion finished with errors", msg: `${done} ok · ${failed} failed` }
+                : { tone: "ok", title: "Conversion complete", msg: `${done} file(s) converted` });
+            }} />
           : <p className="text-sm text-muted">
               {start.isError
                 ? "Couldn't start — check the error above and retry."
-                : "Starting… encode → tag → verify → move to the Plex library."}
+                : "Starting… encode → tag → verify → move to the output folder."}
             </p>}
         {jobId && (
           <div className="mt-3">

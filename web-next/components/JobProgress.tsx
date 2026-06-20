@@ -39,10 +39,20 @@ export function JobProgress({ jobId, onDone }: {
 
     es.addEventListener("file_done", (e) => {
       const r = JSON.parse((e as MessageEvent).data);
+      // Standalone notices (e.g. album-art rescaled / missing) carry a `note`
+      // and tone instead of a per-file result.
+      if (r.note) {
+        setLines((prev) => [...prev, { tone: r.tone === "warn" ? "warn" : "info", text: r.note }]);
+        return;
+      }
       const name = String(r.file ?? "").split(/[\\/]/).pop();
-      setLines((prev) => [...prev, r.success
-        ? { tone: "ok", text: `[ OK ] ${name}${r.dest ? "  →  " + String(r.dest).split(/[\\/]/).slice(-3).join("/") : ""}` }
-        : { tone: "err", text: `[FAIL] ${name}: ${r.error}` }]);
+      setLines((prev) => {
+        const next: TermLine[] = [...prev, r.success
+          ? { tone: "ok", text: `[ OK ] ${name}${r.dest ? "  →  " + String(r.dest).split(/[\\/]/).slice(-3).join("/") : ""}` }
+          : { tone: "err", text: `[FAIL] ${name}: ${r.error}` }];
+        if (r.success && r.warning) next.push({ tone: "warn", text: `       ⚠ ${r.warning}` });
+        return next;
+      });
     });
 
     es.addEventListener("done", (e) => {

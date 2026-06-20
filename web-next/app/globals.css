@@ -1,35 +1,58 @@
 @import "tailwindcss";
 
-/* ── Cyan Command tokens (from C:\Claude\design-preview\style-guide.html) ── */
+/* ── Soft Minimalism tokens (v2 signature style — signature-style.css) ──
+ * Functional minimalism (Rams / Ive): content-first, the interface recedes.
+ * Rounded faces, generous radius, gentle shadows, a single calm blue accent.
+ * Dark mode is primary; the light variant rides on [data-mode="light"].
+ * (The retired "Cyan Command" LCARS look is recoverable from git history.)
+ */
 @theme {
-  --color-bg: #0a0e12;
-  --color-surface: #11161d;
-  --color-surface-2: #161d26;
-  --color-text: #e6edf3;
-  --color-muted: #8b98a5;
-  --color-accent: #22d3ee;
-  --color-accent-2: #f6a609;
-  --color-alert: #ff5247;
-  --color-ok: #3ad08a;
+  --color-bg: #0f1113;
+  --color-surface: #16191c;
+  --color-surface-2: #1d2125;
+  --color-border: #002c66;          /* blue-tinted hairline (a signature touch) */
+  --color-text: #e7e9ea;
+  --color-muted: #9aa1a8;
+  --color-accent: #4c8dff;          /* primary — blue */
+  --color-accent-ink: #ffffff;      /* text/icon on the accent fill */
+  --color-accent-2: #4c8dff;        /* legacy alias → folded into the one accent */
+  --color-alert: #e5534b;
+  --color-ok: #3fb27f;
 
-  --font-display: var(--font-audiowide), sans-serif;
-  --font-body: var(--font-inter), system-ui, sans-serif;
-  --font-mono: var(--font-jetbrains), monospace;
+  --font-display: var(--font-varela), system-ui, sans-serif;   /* Varela Round */
+  --font-body: var(--font-comfortaa), system-ui, sans-serif;   /* Comfortaa */
+  --font-mono: var(--font-fira), ui-monospace, monospace;      /* Fira Code */
 
-  --ease-command: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-command: ease-out;
 }
 
 :root {
-  --glow: 0 0 0.35rem;
-  --dur: 240ms;
-  --chamfer: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+  --radius: 13px;
+  --bw: 1px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.32), 0 7px 25px rgba(0, 0, 0, 0.29);
+  --dur: 250ms;
+}
+
+/* Light variant — per the style guide. (No in-app toggle wired yet; set
+ * data-mode="light" on <html> to activate.) */
+[data-mode="light"] {
+  --color-bg: #fafafa;
+  --color-surface: #ffffff;
+  --color-surface-2: #f1f2f4;
+  --color-border: #7398ce;
+  --color-text: #000000;
+  --color-muted: #6b7177;
+  --color-accent: #2f6fed;
+  --color-accent-2: #2f6fed;
+  --color-alert: #c8372f;
+  --color-ok: #2f9e6e;
 }
 
 body {
   background: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-body);
-  line-height: 1.55;
+  line-height: 1.5;
 }
 
 :focus-visible {
@@ -37,56 +60,46 @@ body {
   outline-offset: 2px;
 }
 
-/* ── Signature utilities ── */
+/* ── Signature utilities (re-skinned: rounded + soft; no chamfer/glow) ──
+ * The legacy class names are kept so callers need no churn — they now resolve
+ * to the soft-minimalism language instead of the retired neon/LCARS one. */
 
+/* Former chamfer clip-path → a rounded face. */
 .chamfer {
-  clip-path: var(--chamfer);
+  border-radius: var(--radius);
 }
 
-.glow-accent {
-  text-shadow: var(--glow) var(--color-accent);
-}
-
-.glow-amber {
-  text-shadow: var(--glow) var(--color-accent-2);
-}
-
-.box-glow {
-  box-shadow: var(--glow) var(--color-accent);
-}
-
-.box-glow-ok {
-  box-shadow: 0 0 0.4rem var(--color-ok);
-}
-
+/* Display type: rounded, friendly, NOT uppercase (Varela Round carries it). */
 .font-display {
   font-family: var(--font-display);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: -0.012em;
 }
 
-/* Blinking terminal cursor */
-.cursor-blink {
+/* Neon glows retired → soft elevation, used for hover/active emphasis.
+ * (The text glows .glow-accent / .glow-amber are simply no longer defined,
+ * so those class names become harmless no-ops.) */
+.box-glow,
+.box-glow-ok {
+  box-shadow: var(--shadow);
+}
+
+/* Spinner ring — replaces the blinking terminal cursor. */
+.spinner {
   display: inline-block;
-  width: 7px;
-  height: 1em;
-  vertical-align: -2px;
-  background: var(--color-accent);
-  animation: blink 1s steps(2) infinite;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--color-surface-2);
+  border-top-color: var(--color-accent);
+  animation: spin 0.7s linear infinite;
 }
 
-@keyframes blink {
-  50% { opacity: 0; }
-}
-
-/* Subtle scanline sweep for panel titles (decorative) */
-@keyframes sweep {
-  from { background-position: -200% 0; }
-  to { background-position: 200% 0; }
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 ::selection {
-  background: color-mix(in oklab, var(--color-accent) 35%, transparent);
+  background: color-mix(in oklab, var(--color-accent) 30%, transparent);
 }
 
 /* Scrollbars in theme */
@@ -100,5 +113,5 @@ body {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
-  .cursor-blink { animation: none; }
+  .spinner { animation: none; }
 }

@@ -27,6 +27,9 @@ interface ConvertState {
   // Per-track title override, keyed "disc-position": true = keep the CUE title
   // instead of the provider/edition title.
   titleExcluded: Record<string, boolean>;
+  // Compilation flag override: null = follow the provider's auto-detection,
+  // true/false = the user's explicit choice on the Review step.
+  compilation: boolean | null;
   jobId: string | null;
 
   setStep: (s: WizardStep) => void;
@@ -39,6 +42,7 @@ interface ConvertState {
   setArtChoice: (id: string | null) => void;
   setEdition: (id: string | null, details: ReleaseDetails | null) => void;
   setTitleExcluded: (m: Record<string, boolean>) => void;
+  setCompilation: (v: boolean | null) => void;
   setJobId: (id: string | null) => void;
   reset: () => void;
 }
@@ -55,6 +59,7 @@ const initial = {
   editionId: null,
   editionDetails: null,
   titleExcluded: {},
+  compilation: null,
   jobId: null,
 };
 
@@ -66,12 +71,13 @@ export const useConvertStore = create<ConvertState>((set) => ({
   setAlbumGroup: (albumGroup) => set({ albumGroup }),
   // A fresh identification invalidates any previously chosen edition + overrides.
   setIdentify: (identifyResult) =>
-    set({ identifyResult, editionId: null, editionDetails: null, titleExcluded: {} }),
+    set({ identifyResult, editionId: null, editionDetails: null, titleExcluded: {}, compilation: null }),
   setChoices: (choices) => set({ choices }),
   setUseProviderTitles: (useProviderTitles) => set({ useProviderTitles }),
   setArtChoice: (artChoiceId) => set({ artChoiceId }),
   setEdition: (editionId, editionDetails) => set({ editionId, editionDetails }),
   setTitleExcluded: (titleExcluded) => set({ titleExcluded }),
+  setCompilation: (compilation) => set({ compilation }),
   setJobId: (jobId) => set({ jobId }),
   reset: () => set(initial),
 }));

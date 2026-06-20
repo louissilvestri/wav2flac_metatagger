@@ -25,17 +25,19 @@ export function stripAccents(s: string): string {
   return (s || "").normalize("NFKD").replace(/\p{Diacritic}/gu, "");
 }
 
-/** Fold for equality/contains checks: punctuation normalized, accents stripped,
- * lowercased, separator punctuation unified, whitespace collapsed. Use on BOTH
- * sides. Mirrors the backend text_utils.fold_for_compare.
+/** Fold for equality/contains checks: punctuation-insensitive. Mirrors the
+ * backend text_utils.fold_for_compare exactly. Use on BOTH sides.
  *
- * Providers disagree on track-list separators — "Whine & Grine / Stand Down
- * Margaret" vs "… , …" vs "… ; …" — so comma / slash / semicolon are all
- * folded to a single space, otherwise the same title fails to match. */
+ * Base (typography, accents, case) + "&" → "and"; apostrophes dropped
+ * ("She's" == "Shes"); every other punctuation/symbol → space. Tolerant of the
+ * ways providers disagree on titles — & vs and, parentheses, slashes, commas,
+ * hyphens — without joining separate words. */
 export function foldForCompare(s: string): string {
   return stripAccents(normalizePunctuation(s || ""))
     .toLowerCase()
-    .replace(/[\/,;]+/g, " ")
+    .replace(/&/g, " and ")
+    .replace(/'/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .split(/\s+/).join(" ").trim();
 }
 

@@ -1,8 +1,10 @@
 """FLAC encoding via the reference flac.exe encoder."""
 
+import os
 import subprocess
 import time
 import wave
+from collections import defaultdict
 from pathlib import Path
 
 from config import load_settings
@@ -111,6 +113,80 @@ def encode_to_flac(
             "verify_passed": False,
             "error": str(e),
         }
+
+
+def find_metaflac_exe() -> str | None:
+    """Locate metaflac (ships alongside flac in the FLAC tools). Derived from the
+    configured flac.exe path first, then common locations, then PATH."""
+    exe = "metaflac.exe" if os.name == "nt" else "metaflac"
+    flac_exe = (load_settings().get("flac_exe_path", "") or "").strip()
+    if flac_exe:
+        cand = Path(flac_exe).with_name(exe)
+        if cand.exists():
+            return str(cand)
+
+    common_paths = [
+        r"C:\Program Files\FLAC\metaflac.exe",
+        r"C:\Program Files (x86)\FLAC\metaflac.exe",
+        r"C:\Program Files\Exact Audio Copy\Flac\metaflac.exe",
+        r"C:\Program Files (x86)\Exact Audio Copy\Flac\metaflac.exe",
+    ]
+    for p in common_paths:
+        if Path(p).exists():
+            return p
+
+    try:
+        result = subprocess.run(["where", exe] if os.name == "nt" else ["which", exe],
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().split("\n")[0].strip()
+    except Exception:
+        pass
+    return None
+
+
+def add_replay_gain(flac_paths: list[str], metaflac_exe: str | None = None) -> dict:
+    """Compute ReplayGain (loudness) tags for the given FLAC files via metaflac.
+
+    Files are grouped by parent folder and each group is analyzed in one
+    invocation, so every track gets REPLAYGAIN_TRACK_GAIN/PEAK and the folder
+    shares a correct REPLAYGAIN_ALBUM_GAIN/PEAK. metaflac requires the files in a
+    group to share sample rate; a mismatched group fails without affecting others.
+
+    Returns {success, processed, errors}.
+    """
+    if not flac_paths:
+        return {"success": True, "processed": 0, "errors": []}
+
+    if metaflac_exe is None:
+        metaflac_exe = find_metaflac_exe()
+    if not metaflac_exe:
+        return {"success": False, "processed": 0,
+                "errors": ["metaflac not found — install the FLAC tools or set the flac.exe path in Settings"]}
+
+    groups: dict[Path, list[str]] = defaultdict(list)
+    for p in flac_paths:
+        pth = Path(p)
+        if pth.exists() and pth.suffix.lower() == ".flac":
+            groups[pth.parent].append(str(pth))
+
+    processed = 0
+    errors = []
+    for parent, files in groups.items():
+        try:
+            result = subprocess.run([metaflac_exe, "--add-replay-gain", *files],
+                                    capture_output=True, text=True, timeout=600)
+            if result.returncode != 0:
+                errors.append(f"{parent.name or parent}: "
+                              f"{result.stderr.strip() or 'metaflac failed'}")
+            else:
+                processed += len(files)
+        except subprocess.TimeoutExpired:
+            errors.append(f"{parent.name or parent}: ReplayGain timed out")
+        except Exception as e:
+            errors.append(f"{parent.name or parent}: {e}")
+
+    return {"success": not errors, "processed": processed, "errors": errors}
 
 
 def find_flac_exe() -> str | None:

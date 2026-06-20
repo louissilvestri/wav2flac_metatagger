@@ -77,7 +77,7 @@ export function MetadataCompare({ rows, choices, onChange }: {
               <td className="p-1.5 text-center">
                 <input
                   type="checkbox"
-                  className="size-3.5 accent-[#22d3ee]"
+                  className="size-3.5 accent-accent"
                   checked={!!choice?.include}
                   onChange={(e) => set(row.key, { include: e.target.checked })}
                 />
@@ -98,7 +98,7 @@ export function MetadataCompare({ rows, choices, onChange }: {
                 {hasValue && row.merged && (
                   row.merged.candidates.length > 1 ? (
                     <select
-                      className="rounded-sm border border-white/15 bg-surface px-1 py-0.5 text-[0.66rem] text-text"
+                      className="rounded-md border border-border bg-surface px-1 py-0.5 text-[0.66rem] text-text"
                       value={choice.source}
                       title="Alternate values from other providers"
                       onChange={(e) => {

@@ -52,12 +52,12 @@ export function ArtPicker({ options, selectedId, onSelect }: {
             onClick={() => onSelect(opt.id)}
             title={`${opt.label}${resolution ? ` — ${resolution}` : ""}${opt.sublabel ? ` — ${opt.sublabel}` : ""}`}
             className={cx(
-              "relative w-[110px] shrink-0 cursor-pointer border bg-surface-2 text-left",
-              "transition-[box-shadow,border-color] duration-[240ms] ease-command",
-              selected ? "border-accent box-glow" : "border-white/15 hover:border-accent/50",
+              "relative w-[110px] shrink-0 cursor-pointer overflow-hidden rounded-[var(--radius)] border bg-surface-2 text-left",
+              "transition-[box-shadow,border-color] duration-[250ms] ease-command",
+              selected ? "border-accent shadow-[var(--shadow)]" : "border-border hover:border-accent/60",
             )}
           >
-            <div className="flex h-[110px] items-center justify-center overflow-hidden bg-[#05080b]">
+            <div className="flex h-[110px] items-center justify-center overflow-hidden bg-surface-2">
               {showImg ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -80,11 +80,11 @@ export function ArtPicker({ options, selectedId, onSelect }: {
               )}
             </div>
             <div className="px-1.5 py-1">
-              <div className="truncate font-mono text-[0.66rem] font-bold text-accent">
+              <div className="truncate font-mono text-[0.66rem] font-bold text-text">
                 {opt.label}
               </div>
               {/* Resolution line — always rendered so tiles align; em-dash when unknown */}
-              <div className="truncate font-mono text-[0.62rem] tabular-nums text-accent-2">
+              <div className="truncate font-mono text-[0.62rem] tabular-nums text-muted">
                 {resolution || (opt.id === "none" ? "" : "—")}
               </div>
               {opt.sublabel && (

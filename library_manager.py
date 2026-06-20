@@ -204,6 +204,9 @@ def group_library_by_album(files: list[dict]) -> list[dict]:
                 "genre": f.get("genre", ""),
                 "label": tags.get("ORGANIZATION", tags.get("LABEL", "")),
                 "catalog_number": tags.get("CATALOGNUMBER", ""),
+                "barcode": tags.get("BARCODE", ""),
+                # RELEASECOUNTRY is the Picard standard; fall back to legacy COUNTRY.
+                "country": tags.get("RELEASECOUNTRY", tags.get("COUNTRY", "")),
                 "musicbrainz_albumid": f.get("musicbrainz_albumid", ""),
                 "musicbrainz_releasegroupid": tags.get("MUSICBRAINZ_RELEASEGROUPID", ""),
                 "has_art": f.get("has_art", False),

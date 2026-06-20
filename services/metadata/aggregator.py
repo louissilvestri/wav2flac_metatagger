@@ -46,8 +46,12 @@ def identify(
         providers: {name: "ok" | "skipped" | "failed: ..."},
     }
     """
+    from config import provider_has_keys
     settings = settings or load_settings()
-    enabled = set(settings.get("metadata_providers_enabled", DEFAULT_ENABLED))
+    # A provider that's enabled but missing its required API key is silently
+    # dropped — it simply isn't used (rather than failing on every lookup).
+    enabled = {p for p in settings.get("metadata_providers_enabled", DEFAULT_ENABLED)
+               if provider_has_keys(p)}
     cache.init_cache_table()
 
     providers_status: dict[str, str] = {}

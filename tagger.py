@@ -40,6 +40,8 @@ def embed_metadata(flac_path: str, metadata: dict, album_art: bytes = None) -> d
         "lyricist": "LYRICIST",
         "isrc": "ISRC",
         "barcode": "BARCODE",
+        "country": "RELEASECOUNTRY",
+        "releasecountry": "RELEASECOUNTRY",
         "catalognumber": "CATALOGNUMBER",
         "label": "ORGANIZATION",
         "organization": "ORGANIZATION",
@@ -110,6 +112,55 @@ def embed_metadata(flac_path: str, metadata: dict, album_art: bytes = None) -> d
         return {"success": False, "error": f"Failed to save tags: {e}", "fields_written": 0}
 
 
+def update_raw_tags(flac_path: str, changes: dict) -> dict:
+    """Set or delete arbitrary Vorbis comments on a FLAC file.
+
+    `changes` maps a tag name to its new value (a string, or a list of strings)
+    to set it, or to None / "" to delete it. Every other tag — and the embedded
+    cover art — is left untouched. This is the power-user escape hatch from the
+    curated reassign fields: it writes exactly what it's told, no merge magic.
+
+    Returns {success, error, tags} where tags is the re-read tag set.
+    """
+    try:
+        audio = FLAC(flac_path)
+    except Exception as e:
+        return {"success": False, "error": f"Failed to open FLAC file: {e}", "tags": {}}
+
+    for key, value in changes.items():
+        if not str(key).strip():
+            continue
+        name = str(key).strip().upper()
+        # Cover art is a picture block, not a text comment — never touch it here.
+        if name == "METADATA_BLOCK_PICTURE":
+            continue
+        if value is None or value == "" or value == []:
+            try:
+                del audio[name]
+            except KeyError:
+                pass
+        elif isinstance(value, list):
+            vals = [str(v) for v in value if str(v).strip() != ""]
+            if vals:
+                audio[name] = vals
+            else:
+                try:
+                    del audio[name]
+                except KeyError:
+                    pass
+        else:
+            audio[name] = [str(value)]
+
+    try:
+        # deleteid3=True keeps the file spec-clean (matches embed_metadata).
+        audio.save(deleteid3=True)
+    except Exception as e:
+        return {"success": False, "error": f"Failed to save tags: {e}", "tags": {}}
+
+    return {"success": True, "error": None,
+            "tags": read_metadata(flac_path).get("tags", {})}
+
+
 def read_metadata(flac_path: str) -> dict:
     """Read all Vorbis Comments from a FLAC file.
 
@@ -138,6 +189,7 @@ def build_metadata_from_release(release_details: dict, disc_number: int, track_n
     meta["date"] = release_details.get("first_release_date") or release_details.get("date", "")
     meta["genre"] = release_details.get("genre", "")
     meta["barcode"] = release_details.get("barcode", "")
+    meta["country"] = release_details.get("country", "")
     meta["catalognumber"] = release_details.get("catalog_number", "")
     meta["label"] = release_details.get("label", "")
     meta["media"] = "CD"

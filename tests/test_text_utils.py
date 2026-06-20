@@ -29,8 +29,9 @@ class TestFoldsShareBase:
         assert fold_for_compare("Café del Mar") == fold_for_compare("Cafe del Mar")
 
     def test_both_handle_typography_the_same_way(self):
-        # The shared base normalizes curly quotes / dashes identically
-        assert fold_for_compare("Go‐Go’s").startswith("go-go")
+        # The shared base normalizes curly quotes / dashes identically; the
+        # compare fold spaces punctuation while fold_loose strips it entirely.
+        assert fold_for_compare("Go‐Go’s") == "go gos"
         assert fold_loose("Go‐Go’s") == "gogos"
 
 
@@ -85,7 +86,8 @@ class TestLucenePhrase:
 
 class TestFoldForCompare:
     def test_case_and_punctuation(self):
-        assert fold_for_compare("Go‐Go’S") == "go-go's"
+        # punctuation-insensitive: hyphen -> space, apostrophe dropped
+        assert fold_for_compare("Go‐Go’S") == "go gos"
 
     def test_whitespace_collapsed(self):
         assert fold_for_compare("  a   b  ") == "a b"
@@ -98,8 +100,17 @@ class TestFoldForCompare:
         # Providers disagree on track-list separators — all must compare equal
         a = fold_for_compare("Whine & Grine / Stand Down Margaret")
         b = fold_for_compare("Whine & Grine , Stand Down Margaret")
-        c = fold_for_compare("Whine & Grine ; Stand Down Margaret")
-        assert a == b == c == "whine & grine stand down margaret"
+        c = fold_for_compare("Whine and Grine ; Stand Down Margaret")
+        assert a == b == c == "whine and grine stand down margaret"
 
     def test_separator_without_surrounding_spaces(self):
         assert fold_for_compare("A/B") == fold_for_compare("A, B") == "a b"
+
+    def test_ampersand_equals_and(self):
+        assert fold_for_compare("Earth, Wind & Fire") == fold_for_compare("Earth Wind and Fire")
+        assert fold_for_compare("Rock & Roll") == fold_for_compare("Rock and Roll") == "rock and roll"
+
+    def test_parentheses_and_punctuation_ignored(self):
+        # parens/punctuation fold to spaces so a contains-match still works
+        assert fold_for_compare("(Do Not) Stand in the Shadows") == "do not stand in the shadows"
+        assert fold_for_compare("She's Mine") == fold_for_compare("Shes Mine") == "shes mine"

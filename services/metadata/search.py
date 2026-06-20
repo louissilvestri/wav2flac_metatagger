@@ -68,8 +68,11 @@ def find_release_candidates(artist: str = "", album: str = "",
     When `album` is blank but `title` is given, this becomes a SONG search:
     find the albums a recording appears on (so the user can hunt for a track's
     original album without knowing the album name)."""
+    from config import provider_has_keys
     settings = settings or load_settings()
-    enabled = set(settings.get("metadata_providers_enabled", DEFAULT_ENABLED))
+    # Drop providers whose required API key is missing — they won't be used.
+    enabled = {p for p in settings.get("metadata_providers_enabled", DEFAULT_ENABLED)
+               if provider_has_keys(p)}
     out: list[dict] = []
 
     # ── Song search: no album, find which albums contain this track ──────────

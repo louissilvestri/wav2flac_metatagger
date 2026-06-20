@@ -16,6 +16,34 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+@pytest.fixture(autouse=True)
+def isolate_config(monkeypatch, tmp_path):
+    """Point config at a throwaway dir so tests never read (or write) the
+    developer's real settings.json / secrets.json. Without this, results depend
+    on the machine — e.g. a custom `merge_precedence` in the user's settings
+    silently flips precedence-sensitive assertions in test_merge/test_aggregator.
+
+    load_settings() reads the module-global CONFIG_FILE at call time, so patching
+    these names isolates every caller (they all share config.load_settings).
+    """
+    import json
+    import config
+    from encoder import find_flac_exe
+
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    cfg_file = cfg_dir / "settings.json"
+    monkeypatch.setattr(config, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(config, "CONFIG_FILE", cfg_file)
+    monkeypatch.setattr(config, "SECRETS_FILE", cfg_dir / "secrets.json")
+
+    # Seed only the FLAC encoder path so conversion tests can still encode;
+    # everything else falls back to defaults (no machine-specific overrides).
+    flac = find_flac_exe()
+    if flac:
+        cfg_file.write_text(json.dumps({"flac_exe_path": flac}), encoding="utf-8")
+
+
 def _make_silent_wav(path: Path, seconds: float = 0.2):
     """Write a tiny 44.1kHz 16-bit mono silent WAV."""
     n_frames = int(44100 * seconds)

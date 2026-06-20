@@ -8,25 +8,100 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from config import load_settings
+from config import load_settings, APP_VERSION
 from database import log_conversion, update_conversion
 from encoder import encode_to_flac, get_wav_info
 from tagger import embed_metadata, build_metadata_from_release
 from file_manager import build_output_path, copy_to_network, cleanup_source_files
-from services.art import select_best_art, prepare_art, find_local_art
+from services.art import (select_best_art, prepare_art, find_local_art_raw,
+                          get_image_resolution)
 
 
-def _download_art(url: str, max_size: int, quality: int) -> bytes | None:
-    """Download a user-selected art URL and prepare it for embedding."""
+def _download_art_raw(url: str) -> bytes | None:
+    """Download a user-selected art URL as raw bytes (no resizing)."""
     import requests
     try:
         resp = requests.get(url, timeout=30, headers={
-            "User-Agent": "MusicManager/2.0 (louissilvestri@hotmail.com)"})
+            "User-Agent": f"MusicManager/{APP_VERSION}"})
         if resp.status_code != 200:
             return None
-        return prepare_art(resp.content, max_size, quality)
+        return resp.content
     except Exception:
         return None
+
+
+def _resolve_album_art(settings: dict, release_details: dict | None,
+                       max_size: int, quality: int) -> tuple[bytes | None, dict]:
+    """Fetch and prepare the album art, reporting what happened to it.
+
+    Precedence:
+      art_source == "local" → the input folder's own art (folder.jpg etc.)
+      art_url               → a specific image the user picked in the UI
+      otherwise             → compare all sources, pick the highest resolution
+    Any choice that yields nothing falls back to the best available source so a
+    missing local file never silently drops art.
+
+    Returns (bytes|None, status), where status feeds the activity log:
+        {source, original: (w, h), final: (w, h), rescaled: bool, missing: bool}
+    """
+    art_url = settings.get("art_url", "")
+    art_source = settings.get("art_source", "")
+    folder = settings.get("input_folder", "")
+
+    raw: bytes | None = None
+    source: str | None = None
+    if art_source == "local":
+        raw, name = find_local_art_raw(folder)
+        source = f"local file ({name})" if name else "local folder"
+    elif art_url:
+        raw = _download_art_raw(art_url)
+        source = "selected image"
+
+    if raw is not None:
+        ow, oh = get_image_resolution(raw)
+        try:
+            prepared = prepare_art(raw, max_size, quality)
+        except Exception:
+            prepared = None
+        if prepared is not None:
+            fw, fh = get_image_resolution(prepared)
+            return prepared, {
+                "source": source, "original": (ow, oh), "final": (fw, fh),
+                "rescaled": ow > max_size or oh > max_size, "missing": False,
+            }
+
+    # Fallback: compare every available source and pick the largest.
+    art_result = select_best_art(
+        release_id=release_details.get("id") if release_details else None,
+        folder=folder,
+        max_size=max_size,
+        quality=quality,
+    )
+    prepared = art_result.get("bytes")
+    if prepared is None:
+        return None, {"source": None, "original": (0, 0), "final": (0, 0),
+                      "rescaled": False, "missing": True}
+    ow, oh = art_result.get("width", 0), art_result.get("height", 0)
+    fw, fh = get_image_resolution(prepared)
+    return prepared, {
+        "source": art_result.get("source"), "original": (ow, oh), "final": (fw, fh),
+        "rescaled": ow > max_size or oh > max_size, "missing": False,
+    }
+
+
+def _art_status_line(status: dict, max_size: int) -> tuple[str | None, str]:
+    """Turn an art status dict into an activity-log line. Returns (text, tone);
+    text is None when the art needs no mention (embedded as-is). Only rescaling
+    and missing art are surfaced."""
+    if status["missing"]:
+        return ("No album art found — files will be tagged without a cover.", "warn")
+    if status["rescaled"]:
+        ow, oh = status["original"]
+        fw, fh = status["final"]
+        src = status["source"] or "art"
+        return (f"Album art rescaled from {ow}×{oh} to {fw}×{fh} "
+                f"(max {max_size}px) — {src}.", "warn")
+    return (None, "info")
 
 
 def _build_track_metadata(release_details: dict | None, file_info: dict,
@@ -54,10 +129,12 @@ def _build_track_metadata(release_details: dict | None, file_info: dict,
         metadata["tracknumber"] = str(track_number)
     if not metadata.get("discnumber"):
         metadata["discnumber"] = str(disc_number)
-    # Stamp the compilation flag so the library reliably detects it later,
-    # even for single-artist greatest-hits sets with no title keyword.
-    if release_details and release_details.get("compilation"):
-        metadata["compilation"] = "1"
+    # Stamp the compilation flag BOTH ways from the user's Review-step choice
+    # (seeded from provider detection): "1" marks a compilation; "0" is an
+    # authoritative "not a compilation" that overrides the library's keyword /
+    # multi-artist heuristics — so deselecting it at convert time actually sticks.
+    if release_details is not None and "compilation" in release_details:
+        metadata["compilation"] = "1" if release_details.get("compilation") else "0"
     return metadata
 
 
@@ -115,35 +192,24 @@ def run_conversion(
         on_progress({"status": "error", "error": "Output folder not configured"})
         return {"completed": 0, "failed": 0, "cancelled": False, "total": len(files)}
 
-    # Fetch album art once. Precedence:
-    #   art_source == "local" → the rip folder's own EAC art (folder.jpg etc.)
-    #   art_url               → a specific image the user picked in the UI
-    #   otherwise             → compare all sources, pick the highest resolution
-    # Any choice that yields nothing falls back to the best available source so
-    # a missing local file never silently drops art.
+    # Fetch album art once, then report rescaling / missing art to the activity
+    # window so the user knows what landed on their files before any track is
+    # written (the art is shared across the whole batch).
     album_art = None
     if settings.get("embed_album_art"):
         max_size = settings.get("art_max_size", 1200)
         quality = settings.get("art_quality", 90)
-        art_url = settings.get("art_url", "")
-        art_source = settings.get("art_source", "")
-        if art_source == "local":
-            album_art = find_local_art(settings.get("input_folder", ""), max_size, quality)
-        elif art_url:
-            album_art = _download_art(art_url, max_size, quality)
-        if album_art is None:
-            art_result = select_best_art(
-                release_id=release_details.get("id") if release_details else None,
-                folder=settings.get("input_folder", ""),
-                max_size=max_size,
-                quality=quality,
-            )
-            album_art = art_result.get("bytes")
+        album_art, art_status = _resolve_album_art(
+            settings, release_details, max_size, quality)
+        note, tone = _art_status_line(art_status, max_size)
+        if note:
+            on_file_done({"file": "artwork", "note": note, "tone": tone})
 
     total = len(files)
     completed = 0
     failed = 0
     cancelled = False
+    converted_paths: list[str] = []   # final FLACs, for ReplayGain analysis
 
     for idx, file_info in enumerate(files):
         if is_cancelled():
@@ -281,6 +347,7 @@ def run_conversion(
         )
 
         completed += 1
+        converted_paths.append(str(dest_path))
         done_payload = {
             "file": wav_path,
             "success": True,
@@ -293,9 +360,13 @@ def run_conversion(
             done_payload["warning"] = "tags embedded, but album art is missing"
         on_file_done(done_payload)
 
-    # Post-conversion cleanup: delete source WAV, CUE, and art files —
-    # only when every file converted successfully and nothing was cancelled
-    if not cancelled and failed == 0 and completed == total and settings.get("delete_wav_after_convert"):
+    # Post-conversion cleanup: delete source WAV, CUE, and art files — only when
+    # at least one file actually converted and ALL of them succeeded. The
+    # `completed > 0` guard is critical: without it an empty/no-op run (total==0,
+    # e.g. convert invoked before a scan) satisfies `completed == total` and the
+    # glob-based cleanup wipes the folder's CUE/art though nothing was converted.
+    if (not cancelled and completed > 0 and failed == 0 and completed == total
+            and settings.get("delete_wav_after_convert")):
         input_folder = settings.get("input_folder", "")
         wav_paths = [f["path"] for f in files]
         try:
@@ -308,6 +379,22 @@ def run_conversion(
         except Exception as e:
             on_file_done({"file": "cleanup", "success": False,
                           "error": f"Cleanup failed: {e}"})
+
+    # ReplayGain: analyze the finished FLACs (per album folder) so the library
+    # carries loudness tags. Non-fatal — a missing metaflac just warns.
+    if settings.get("add_replay_gain") and converted_paths:
+        from encoder import add_replay_gain
+        on_file_done({"file": "replaygain",
+                      "note": "Calculating ReplayGain (loudness) tags…", "tone": "info"})
+        rg = add_replay_gain(converted_paths)
+        if rg["success"]:
+            on_file_done({"file": "replaygain",
+                          "note": f"ReplayGain applied to {rg['processed']} file(s).",
+                          "tone": "info"})
+        else:
+            on_file_done({"file": "replaygain",
+                          "note": "ReplayGain skipped: " + "; ".join(rg["errors"]),
+                          "tone": "warn"})
 
     on_progress({"status": "done", "current": total, "total": total})
     return {"completed": completed, "failed": failed, "cancelled": cancelled, "total": total}

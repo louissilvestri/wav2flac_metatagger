@@ -5,11 +5,11 @@
  * wizard, fed by the aggregator (fingerprints work even on blank tags).
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, LibraryAlbum, LibraryFile, LibraryScan, IdentifyResult, ReleaseCandidate, ReleaseDetails, FieldValue } from "@/lib/api";
 import { foldForCompare, normalizeArtistForSearch } from "@/lib/text";
-import { Panel, Button, Input, Field, StatCard, Spinner, Tag, Dialog, Terminal, TermLine, Checkbox, cx } from "@/components/ui";
+import { Panel, Button, Input, Field, StatCard, Spinner, Tag, Dialog, Drawer, Terminal, TermLine, Checkbox, PendingSummary, useToast, cx } from "@/components/ui";
 import { MetadataCompare, CompareRow, Choices, defaultChoices, asText } from "@/components/MetadataCompare";
 import { ArtPicker, ArtOption } from "@/components/ArtPicker";
 import { ManualSearch } from "@/components/ManualSearch";
@@ -49,29 +49,60 @@ export default function LibraryPage() {
   return (
     <div className="space-y-3">
       <header className="flex items-center justify-between">
-        <h1 className="font-display text-2xl text-accent glow-accent">Library</h1>
+        <h1 className="font-display text-2xl text-text">Library</h1>
         <Button variant="solid" disabled={scan.isFetching} onClick={() => scan.refetch()}>
           {scan.isFetching ? "Scanning…" : data ? "Rescan" : "Scan Library"}
         </Button>
       </header>
 
-      {scan.isFetching && <Spinner label="reading FLAC tags across the network share…" />}
+      {scan.isFetching && <Spinner label="reading FLAC tags from the output folder…" />}
       {data?.error && <p className="font-mono text-sm text-alert">{data.error}</p>}
 
       {data && !data.error && (
         <>
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
-            <StatCard label="Tracks" value={data.total_files}
-              onClick={() => setFilter("all")} active={filter === "all"} />
-            <StatCard label="Albums" value={data.albums.length}
-              onClick={() => setFilter("all")} />
-            <StatCard label="Compilation Trks" value={data.compilation_tracks}
-              onClick={() => setFilter("compilations")} active={filter === "compilations"} />
-            <StatCard label="Incomplete" value={data.incomplete_tracks}
-              onClick={() => setFilter("incomplete")} active={filter === "incomplete"} />
-            <StatCard label="Duplicates" value={data.duplicate_count}
-              onClick={() => setFilter("duplicates")} active={filter === "duplicates"} />
+          {/* Tier 1 — library KPIs (totals, not interactive). */}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <StatCard label="Tracks" value={data.total_files} />
+            <StatCard label="Albums" value={data.albums.length} />
+            <StatCard label="Incomplete tracks" value={data.incomplete_tracks} />
+            <StatCard label="Duplicate sets" value={data.duplicate_count} />
           </div>
+
+          {/* Explicit filters — each chip is a clearly-labelled toggle (not a
+              stat that secretly filters), with its subset count. */}
+          <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter albums">
+            <span className="mr-1 text-xs text-muted">Filter</span>
+            {([
+              ["all", "All albums", data.albums.length],
+              ["incomplete", "Incomplete", data.incomplete_tracks],
+              ["compilations", "Compilations", data.compilation_tracks],
+              ["duplicates", "Duplicates", data.duplicate_count],
+            ] as const).map(([id, label, count]) => (
+              <button
+                key={id}
+                aria-pressed={filter === id}
+                onClick={() => setFilter(id)}
+                className={cx(
+                  "rounded-full border px-3 py-1 text-xs transition-colors",
+                  filter === id
+                    ? "border-accent bg-accent/12 text-accent"
+                    : "border-border text-muted hover:border-muted hover:text-text",
+                )}
+              >
+                {label} <span className="tabular-nums opacity-70">{count}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Active-filter readout + escape hatch. */}
+          {filter !== "all" && (
+            <p className="text-xs text-muted">
+              Showing {filter === "duplicates" ? data.duplicates.length : albums.length}{" "}
+              {filter === "duplicates" ? "duplicate set(s)" : filter === "incomplete" ? "incomplete album(s)" : "compilation(s)"}
+              {" · "}
+              <button onClick={() => setFilter("all")} className="text-accent hover:underline">Clear</button>
+            </p>
+          )}
 
           {filter !== "duplicates" && (
             <Input
@@ -99,10 +130,30 @@ function AlbumRow({ album }: { album: LibraryAlbum }) {
   const [cleanup, setCleanup] = useState(false);
   const [detail, setDetail] = useState<LibraryFile | null>(null);
   const pct = Math.round(album.avg_completeness);
+  const qc = useQueryClient();
+  const toast = useToast();
+
+  // ReplayGain: analyze every track in the album so it carries loudness tags.
+  const replayGain = useMutation({
+    mutationFn: () => api.replayGain(album.files.map((f) => f.path)),
+    onSuccess: async (r) => {
+      if (r.success) {
+        const updated = await api.rescanLibraryPaths(album.files.map((f) => f.path));
+        qc.setQueryData(["library"], updated);
+        toast({ tone: "ok", title: "ReplayGain applied",
+                msg: `${r.processed} track(s) in ${album.album || "album"}` });
+      } else {
+        toast({ tone: "error", title: "ReplayGain failed", msg: r.errors.join("; ") });
+      }
+    },
+    onError: (e) => toast({ tone: "error", title: "ReplayGain failed",
+                            msg: String((e as Error)?.message ?? e) }),
+  });
 
   return (
     <div className="chamfer border border-accent/20 bg-surface">
       <button
+        aria-expanded={open}
         className="flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left hover:bg-accent/5"
         onClick={() => setOpen(!open)}
       >
@@ -152,9 +203,13 @@ function AlbumRow({ album }: { album: LibraryAlbum }) {
             </button>
           ))}
 
-          <div className="mt-2">
+          <div className="mt-2 flex gap-2">
             <Button variant="outline" onClick={() => setCleanup(!cleanup)}>
               Quick Clean Up
+            </Button>
+            <Button variant="ghost" disabled={replayGain.isPending}
+                    onClick={() => replayGain.mutate()}>
+              {replayGain.isPending ? "Analyzing…" : "Add ReplayGain"}
             </Button>
           </div>
           {cleanup && <QuickCleanup album={album} onClose={() => setCleanup(false)} />}
@@ -170,6 +225,7 @@ function AlbumRow({ album }: { album: LibraryAlbum }) {
 
 function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => void }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const [result, setResult] = useState<IdentifyResult | null>(null);
   const [choices, setChoices] = useState<Choices>({});
   const [artChoice, setArtChoice] = useState<string>(album.has_art ? "keep" : "auto");
@@ -205,6 +261,13 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
       if (r.compilation) setMarkComp(true);  // provider says compilation → default on
     },
   });
+
+  // Auto-identify on open — opening the drawer IS the intent, so don't make the
+  // user click "Identify" first (matches the Convert wizard's Identify step).
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (!autoRan.current && identify.isIdle) { autoRan.current = true; identify.mutate(); }
+  }, [identify]);
 
   // Candidate editions from every provider (track count = this album's files).
   // Default to the album's own tags; a manual search overrides the terms.
@@ -259,7 +322,7 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
   const currentFor = (key: string): string => ({
     artist: album.albumartist, title: album.album, original_date: album.date,
     genre: album.genre, label: album.label, catalog_number: album.catalog_number,
-    country: "", barcode: "",
+    country: album.country, barcode: album.barcode,
   } as Record<string, string>)[key] ?? "";
 
   const rowsFor = (r: IdentifyResult, ed: ReleaseDetails | null, edProvider = ""): CompareRow[] => {
@@ -358,8 +421,10 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
       const paths = res.results.flatMap((r) => [r.path, r.new_path].filter(Boolean));
       const updated = await api.rescanLibraryPaths(paths);
       qc.setQueryData(["library"], updated);
+      toast({ tone: "ok", title: "Album updated", msg: `${album.files.length} tracks in ${album.album || "album"}` });
       onClose();
     },
+    onError: (e) => toast({ tone: "error", title: "Couldn’t update album", msg: String((e as Error)?.message ?? e) }),
   });
 
   const lines: TermLine[] = result
@@ -378,127 +443,166 @@ function QuickCleanup({ album, onClose }: { album: LibraryAlbum; onClose: () => 
     noneArtOption("skip"),
   ] : [];
 
-  return (
-    <div className="chamfer mt-2 border border-accent/30 bg-surface-2 p-3">
-      {!result ? (
-        <div className="flex items-center gap-3">
-          <Button variant="solid" disabled={identify.isPending} onClick={() => identify.mutate()}>
-            {identify.isPending ? "Identifying…" : "Identify Album"}
-          </Button>
-          {identify.isPending && <Spinner label="fingerprinting + querying providers…" />}
-          {identify.error && <span className="font-mono text-xs text-alert">{String(identify.error)}</span>}
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <Terminal lines={lines} className="max-h-36 overflow-y-auto" />
-          {result.identity.method === "none" ? (
-            <p className="font-mono text-sm text-alert">No identification found.</p>
-          ) : (
-            <>
-              <p className="font-mono text-xs text-muted">
-                Identified via <b className="text-accent">{result.identity.method}</b>
-                {result.identity.confidence_note && ` (${result.identity.confidence_note})`} ·{" "}
-                {effTracks.length} tracks vs {album.files.length} files
-              </p>
-              <MetadataCompare
-                rows={rowsFor(result, editionDetails, editionId?.split(":")[0] ?? "")}
-                choices={choices} onChange={setChoices} />
+  // Pending-changes readout for the footer (always visible at the commit point).
+  const rows = result ? rowsFor(result, editionDetails, editionId?.split(":")[0] ?? "") : [];
+  const fieldChanges = rows.filter((row) => {
+    const c = choices[row.key];
+    return !!c?.include && !!c.value && c.value !== row.current;
+  }).length;
+  const titleChanges = trackPairs.filter(({ file, match }) => !!match && !titleExcluded[file.path]).length;
+  const artLabel = artOptions.find((o) => o.id === artChoice)?.label;
+  const ready = !!result && result.identity.method !== "none";
 
+  return (
+    <Drawer
+      open
+      title={`Clean Up — ${album.album || "Unknown Album"}`}
+      subtitle={album.albumartist || "Unknown Artist"}
+      onClose={onClose}
+      footer={
+        <div className="flex items-center justify-between gap-3">
+          <PendingSummary fields={fieldChanges} tracks={titleChanges} art={artLabel} />
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button variant="solid" disabled={!ready || apply.isPending} onClick={() => apply.mutate()}>
+              {apply.isPending ? "Applying…" : `Apply to ${album.files.length} tracks`}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      {!result ? (
+        <div className="space-y-3">
+          {identify.error ? (
+            <>
+              <p className="font-mono text-sm text-alert">{String(identify.error)}</p>
+              <Button variant="solid" disabled={identify.isPending} onClick={() => identify.mutate()}>
+                Retry identify
+              </Button>
+            </>
+          ) : (
+            <Spinner label="fingerprinting + querying providers…" />
+          )}
+        </div>
+      ) : result.identity.method === "none" ? (
+        <p className="font-mono text-sm text-alert">
+          No identification found — try the single-track “Find Original Album” instead.
+        </p>
+      ) : (
+        <div className="space-y-5">
+          {/* Context — how it was identified. */}
+          <div>
+            <p className="mb-1 font-mono text-xs text-muted">
+              Identified via <b className="text-accent">{result.identity.method}</b>
+              {result.identity.confidence_note && ` (${result.identity.confidence_note})`} ·{" "}
+              {effTracks.length} tracks vs {album.files.length} files
+            </p>
+            <Terminal lines={lines} className="max-h-28 overflow-y-auto" />
+          </div>
+
+          {/* 1 · Edition (source) — drives everything below it. */}
+          <section>
+            <h4 className="font-display mb-1 text-sm text-text">1 · Edition — the source</h4>
+            <p className="mb-2 text-xs text-muted">
+              Pick the release this album is from; the fields, track titles, and art below update to match.
+            </p>
+            <div className="mb-2">
+              <ManualSearch
+                defaultArtist={album.albumartist}
+                defaultAlbum={album.album}
+                pending={candidates.isFetching}
+                onSearch={({ artist, album: alb }) =>
+                  setSearchSpec({ artist, album: alb, track_count: album.files.length })}
+              />
+            </div>
+            {candidates.isLoading && <Spinner label="searching all providers for editions…" />}
+            {candidates.data && candidates.data.length > 0 && (
+              <EditionPicker
+                candidates={candidates.data}
+                activeId={activeId}
+                expectedTracks={album.files.length}
+                pending={chooseEdition.isPending}
+                note={`Pick the edition matching this album (${album.files.length} tracks).`}
+                onPick={(c) => chooseEdition.mutate(c)}
+              />
+            )}
+          </section>
+
+          {/* 2 · Album metadata — re-seeded by the edition above. */}
+          <section>
+            <h4 className="font-display mb-1 text-sm text-text">2 · Album metadata</h4>
+            {editionDetails && (
+              <p aria-live="polite" className="mb-1 text-xs text-accent">
+                Fields updated from the {editionId?.split(":")[0]} edition.
+              </p>
+            )}
+            <MetadataCompare rows={rows} choices={choices} onChange={setChoices} />
+            <div className="mt-2">
               <Checkbox
                 label={`Mark as compilation${result.compilation ? " (detected)" : ""}`}
                 checked={markComp}
                 onChange={(e) => setMarkComp(e.target.checked)}
               />
+            </div>
+          </section>
 
-              <div>
-                <h4 className="font-display mb-1 text-xs text-accent-2">Edition</h4>
-                <div className="mb-2">
-                  <ManualSearch
-                    defaultArtist={album.albumartist}
-                    defaultAlbum={album.album}
-                    pending={candidates.isFetching}
-                    onSearch={({ artist, album: alb }) =>
-                      setSearchSpec({ artist, album: alb, track_count: album.files.length })}
-                  />
-                </div>
-                {candidates.isLoading && <Spinner label="searching all providers for editions…" />}
-                {candidates.data && candidates.data.length > 0 && (
-                  <EditionPicker
-                    candidates={candidates.data}
-                    activeId={activeId}
-                    expectedTracks={album.files.length}
-                    pending={chooseEdition.isPending}
-                    note={`Pick the edition matching this album (${album.files.length} tracks).`}
-                    onPick={(c) => chooseEdition.mutate(c)}
-                  />
-                )}
-              </div>
-
-              <div>
-                <h4 className="font-display mb-1 text-xs text-accent-2">
-                  Track titles — current vs edition (check to apply)
-                </h4>
-                <div className="max-h-60 overflow-y-auto">
-                  <table className="w-full font-mono text-[0.72rem]">
-                    <thead>
-                      <tr className="border-b border-white/15 text-left text-[0.6rem] uppercase text-muted">
-                        <th className="w-8 p-1" />
-                        <th className="w-8 p-1">#</th>
-                        <th className="p-1">Current</th>
-                        <th className="p-1">Edition</th>
+          {/* 3 · Track titles. */}
+          <section>
+            <h4 className="font-display mb-1 text-sm text-text">
+              3 · Track titles <span className="text-muted">— current vs edition (check to apply)</span>
+            </h4>
+            <div className="max-h-60 overflow-y-auto">
+              <table className="w-full font-mono text-[0.72rem]">
+                <thead>
+                  <tr className="border-b border-white/15 text-left text-[0.6rem] uppercase text-muted">
+                    <th className="w-8 p-1" />
+                    <th className="w-8 p-1">#</th>
+                    <th className="p-1">Current</th>
+                    <th className="p-1">Edition</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trackPairs.map(({ file: f, match }) => {
+                    const willApply = !!match && !titleExcluded[f.path];
+                    return (
+                      <tr key={f.path} className="border-b border-white/5">
+                        <td className="p-1 text-center">
+                          <input type="checkbox" className="size-3.5 accent-accent"
+                            checked={willApply}
+                            disabled={!match}
+                            onChange={(e) => setTitleExcluded({ ...titleExcluded, [f.path]: !e.target.checked })} />
+                        </td>
+                        <td className="p-1 text-muted">{match?.position ?? f.tracknumber ?? "?"}</td>
+                        <td className="max-w-[210px] truncate p-1 text-muted" title={f.title}>
+                          {f.title || f.filename}
+                        </td>
+                        <td className={cx("max-w-[210px] truncate p-1",
+                            !match ? "text-alert" : willApply ? "text-ok" : "text-muted")}
+                            title={match?.title ?? ""}>
+                          {match?.title ?? "— no match —"}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {trackPairs.map(({ file: f, match }) => {
-                        const willApply = !!match && !titleExcluded[f.path];
-                        return (
-                          <tr key={f.path} className="border-b border-white/5">
-                            <td className="p-1 text-center">
-                              <input type="checkbox" className="size-3.5 accent-[#22d3ee]"
-                                checked={willApply}
-                                disabled={!match}
-                                onChange={(e) => setTitleExcluded({ ...titleExcluded, [f.path]: !e.target.checked })} />
-                            </td>
-                            <td className="p-1 text-muted">{match?.position ?? f.tracknumber ?? "?"}</td>
-                            <td className="max-w-[210px] truncate p-1 text-muted" title={f.title}>
-                              {f.title || f.filename}
-                            </td>
-                            <td className={cx("max-w-[210px] truncate p-1",
-                                !match ? "text-alert" : willApply ? "text-ok" : "text-muted")}
-                                title={match?.title ?? ""}>
-                              {match?.title ?? "— no match —"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                {trackPairs.some((p) => !p.match) && (
-                  <p className="mt-1 font-mono text-[0.66rem] text-alert">
-                    ⚠ {trackPairs.filter((p) => !p.match).length} file(s) didn’t match a track in this
-                    edition — try a different edition, or fix the track title first.
-                  </p>
-                )}
-              </div>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {trackPairs.some((p) => !p.match) && (
+              <p className="mt-1 font-mono text-[0.66rem] text-alert">
+                ⚠ {trackPairs.filter((p) => !p.match).length} file(s) didn’t match a track in this
+                edition — try a different edition, or fix the track title first.
+              </p>
+            )}
+          </section>
 
-              <div>
-                <h4 className="font-display mb-1 text-xs text-accent-2">Album Art</h4>
-                <ArtPicker options={artOptions} selectedId={artChoice} onSelect={setArtChoice} />
-              </div>
-              <div className="flex gap-2">
-                <Button variant="solid" disabled={apply.isPending} onClick={() => apply.mutate()}>
-                  {apply.isPending ? "Applying…" : `Apply to ${album.files.length} tracks`}
-                </Button>
-                <Button variant="ghost" onClick={onClose}>Cancel</Button>
-                {apply.error && <span className="font-mono text-xs text-alert">{String(apply.error)}</span>}
-              </div>
-            </>
-          )}
+          {/* 4 · Album art. */}
+          <section>
+            <h4 className="font-display mb-1 text-sm text-text">4 · Album art</h4>
+            <ArtPicker options={artOptions} selectedId={artChoice} onSelect={setArtChoice} />
+          </section>
         </div>
       )}
-    </div>
+    </Drawer>
   );
 }
 
@@ -531,12 +635,14 @@ function matchTrack(tracks: MatchTrack[], f: LibraryFile) {
 
 function DuplicatesView({ data }: { data: LibraryScan }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const [confirm, setConfirm] = useState<LibraryFile | null>(null);
 
   const del = useMutation({
     mutationFn: (path: string) => api.deleteLibraryFile(path),
     onSuccess: (res, path) => {
-      if (!res.success) return;
+      if (!res.success) { toast({ tone: "error", title: "Delete failed", msg: res.error }); return; }
+      toast({ tone: "ok", title: "Duplicate deleted", msg: path.split(/[\\/]/).pop() });
       // Optimistic local update — no full network rescan for one delete
       qc.setQueryData<LibraryScan>(["library"], (old) => {
         if (!old) return old;
@@ -559,6 +665,10 @@ function DuplicatesView({ data }: { data: LibraryScan }) {
 
   return (
     <div className="space-y-2">
+      <p className="text-xs text-muted">
+        Same track title + artist found across more than one album. Keep the copy you want and delete
+        the rest — each delete is confirmed first.
+      </p>
       {data.duplicates.map((dup) => (
         <Panel key={`${dup.artist}|${dup.title}`}
                title={<span className="text-sm">{dup.title} <span className="text-muted">— {dup.artist}</span></span>}>
@@ -594,7 +704,7 @@ function DuplicatesView({ data }: { data: LibraryScan }) {
 // ── Track detail dialog with single-track reassign ────────────────────────────
 
 function TrackDetail({ file, onClose }: { file: LibraryFile | null; onClose: () => void }) {
-  const [mode, setMode] = useState<null | "reassign" | "cleanup">(null);
+  const [mode, setMode] = useState<null | "reassign" | "cleanup" | "tags">(null);
   const art = useQuery({
     queryKey: ["embedded-art", file?.path],
     queryFn: () => api.embeddedArt(file!.path),
@@ -610,9 +720,10 @@ function TrackDetail({ file, onClose }: { file: LibraryFile | null; onClose: () 
   ];
 
   return (
-    <Dialog open wide title={file.title || file.filename} onClose={onClose}>
+    <Drawer open title={file.title || file.filename}
+            subtitle={`${file.artist || "?"} — ${file.album || "?"}`} onClose={onClose}>
       <div className="flex gap-4">
-        <div className="size-28 shrink-0 overflow-hidden border border-white/15 bg-[#05080b]">
+        <div className="size-28 shrink-0 overflow-hidden rounded-[var(--radius)] border border-border bg-surface-2">
           {art.data?.success && art.data.data ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={`data:image/jpeg;base64,${art.data.data}`} alt="" className="h-full w-full object-cover" />
@@ -640,19 +751,103 @@ function TrackDetail({ file, onClose }: { file: LibraryFile | null; onClose: () 
       </div>
       <p className="mt-3 break-all font-mono text-[0.66rem] text-muted">{file.path}</p>
 
+      {/* Pick what to do with this track — one dominant action, one secondary. */}
       {mode === null && (
-        <div className="mt-3 flex gap-2">
+        <div className="mt-4 flex flex-wrap gap-2">
           <Button variant="solid" onClick={() => setMode("cleanup")}>
             Auto Clean Up
           </Button>
           <Button variant="outline" onClick={() => setMode("reassign")}>
             Find Original Album…
           </Button>
+          <Button variant="ghost" onClick={() => setMode("tags")}>
+            Edit Tags…
+          </Button>
         </div>
       )}
       {mode === "cleanup" && <TrackAutoCleanup file={file} onDone={onClose} />}
       {mode === "reassign" && <TrackReassign file={file} onDone={onClose} />}
-    </Dialog>
+      {mode === "tags" && <TrackRawTags file={file} onDone={onClose} />}
+    </Drawer>
+  );
+}
+
+/** Advanced raw-tag editor: edit/add/delete arbitrary Vorbis comments on one
+ * file. Renaming a key moves its value; clearing a key deletes it. Cover art is
+ * managed separately and never shown here. */
+function TrackRawTags({ file, onDone }: { file: LibraryFile; onDone: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  type Row = { id: number; key: string; value: string };
+  const idRef = useRef(0);
+  const [rows, setRows] = useState<Row[]>(() =>
+    Object.entries(file.all_tags || {})
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => ({ id: idRef.current++, key: k,
+                          value: Array.isArray(v) ? v.join("; ") : String(v) })));
+
+  const origKeys = useMemo(
+    () => Object.keys(file.all_tags || {}).map((k) => k.toUpperCase()),
+    [file.all_tags]);
+
+  const setRow = (id: number, patch: Partial<Row>) =>
+    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const removeRow = (id: number) => setRows((rs) => rs.filter((r) => r.id !== id));
+  const addRow = () => setRows((rs) => [...rs, { id: idRef.current++, key: "", value: "" }]);
+
+  const save = useMutation({
+    mutationFn: () => {
+      const changes: Record<string, string | null> = {};
+      const nextKeys = new Set(rows.map((r) => r.key.trim().toUpperCase()).filter(Boolean));
+      // Any original key no longer present (deleted or renamed away) → delete.
+      for (const k of origKeys) if (!nextKeys.has(k)) changes[k] = null;
+      // Every present row → set its value (idempotent for unchanged rows).
+      for (const r of rows) {
+        const k = r.key.trim().toUpperCase();
+        if (k && k !== "METADATA_BLOCK_PICTURE") changes[k] = r.value;
+      }
+      return api.updateTrackTags(file.path, changes);
+    },
+    onSuccess: async () => {
+      const updated = await api.rescanLibraryPaths([file.path]);
+      qc.setQueryData(["library"], updated);
+      toast({ tone: "ok", title: "Tags saved", msg: file.title || file.filename });
+      onDone();
+    },
+    onError: (e) => toast({ tone: "error", title: "Couldn’t save tags",
+                            msg: String((e as Error)?.message ?? e) }),
+  });
+
+  return (
+    <div className="mt-4 space-y-2">
+      <p className="font-mono text-[0.68rem] text-muted">
+        Advanced: edit raw FLAC tags directly. Renaming a key moves its value;
+        clearing a key deletes it. Cover art is managed separately.
+      </p>
+      <div className="max-h-72 space-y-1 overflow-y-auto">
+        {rows.map((r) => (
+          <div key={r.id} className="flex items-center gap-1.5">
+            <Input value={r.key} placeholder="TAG"
+                   onChange={(e) => setRow(r.id, { key: e.target.value })}
+                   className="w-44 px-2 py-1 text-[0.72rem] uppercase" />
+            <Input value={r.value} placeholder="value"
+                   onChange={(e) => setRow(r.id, { value: e.target.value })}
+                   className="flex-1 px-2 py-1 text-[0.72rem]" />
+            <button onClick={() => removeRow(r.id)} title="Delete tag"
+                    className="px-2 text-muted hover:text-alert">✕</button>
+          </div>
+        ))}
+        {rows.length === 0 && (
+          <p className="font-mono text-[0.7rem] text-muted">No tags. Add one below.</p>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <Button variant="ghost" onClick={addRow}>+ Add tag</Button>
+        <Button variant="solid" disabled={save.isPending} onClick={() => save.mutate()}>
+          {save.isPending ? "Saving…" : "Save Tags"}
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -661,6 +856,7 @@ function TrackDetail({ file, onClose }: { file: LibraryFile | null; onClose: () 
  * unless you opt in. */
 function TrackAutoCleanup({ file, onDone }: { file: LibraryFile; onDone: () => void }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const [result, setResult] = useState<IdentifyResult | null>(null);
   const [choices, setChoices] = useState<Choices>({});
 
@@ -681,6 +877,13 @@ function TrackAutoCleanup({ file, onDone }: { file: LibraryFile; onDone: () => v
       setChoices(defaults);
     },
   });
+
+  // Auto-identify on open — choosing "Auto Clean Up" is the intent; don't make
+  // the user click again to start the fingerprint + provider lookup.
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (!autoRan.current && identify.isIdle) { autoRan.current = true; identify.mutate(); }
+  }, [identify]);
 
   const apply = useMutation({
     mutationFn: () => {
@@ -711,6 +914,7 @@ function TrackAutoCleanup({ file, onDone }: { file: LibraryFile; onDone: () => v
       if (res.success) {
         const updated = await api.rescanLibraryPaths([file.path, res.new_path].filter(Boolean));
         qc.setQueryData(["library"], updated);
+        toast({ tone: "ok", title: "Track cleaned up", msg: file.title || file.filename });
         onDone();
       }
     },
@@ -722,11 +926,16 @@ function TrackAutoCleanup({ file, onDone }: { file: LibraryFile; onDone: () => v
     <div className="mt-3 space-y-3 border-t border-white/10 pt-3">
       {!result ? (
         <div className="flex items-center gap-3">
-          <Button variant="solid" disabled={identify.isPending} onClick={() => identify.mutate()}>
-            {identify.isPending ? "Fingerprinting…" : "Identify This Track"}
-          </Button>
-          {identify.isPending && <Spinner label="fingerprint + providers…" />}
-          {identify.error && <span className="font-mono text-xs text-alert">{String(identify.error)}</span>}
+          {identify.error ? (
+            <>
+              <span className="font-mono text-xs text-alert">{String(identify.error)}</span>
+              <Button variant="solid" disabled={identify.isPending} onClick={() => identify.mutate()}>
+                Retry
+              </Button>
+            </>
+          ) : (
+            <Spinner label="fingerprint + providers…" />
+          )}
         </div>
       ) : result.identity.method === "none" ? (
         <p className="font-mono text-sm text-alert">
@@ -776,7 +985,11 @@ function buildTrackRows(r: IdentifyResult, file: LibraryFile): CompareRow[] {
  * so bonus/expanded-edition tracks resolve (MB track search alone misses them). */
 function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void }) {
   const qc = useQueryClient();
-  const [artist, setArtist] = useState(normalizeArtistForSearch(file.albumartist || file.artist));
+  const toast = useToast();
+  // Use the SONG's artist, not the album artist: the point of this lookup is to
+  // move a track off a compilation (often "Various Artists") to its original
+  // album by the actual performer.
+  const [artist, setArtist] = useState(normalizeArtistForSearch(file.artist || file.albumartist));
   // Default blank: "find the original album" works best as a song search.
   // The field stays editable for when the user knows the album name.
   const [album, setAlbum] = useState("");
@@ -879,7 +1092,10 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
       if (res.success) {
         const updated = await api.rescanLibraryPaths([file.path, res.new_path].filter(Boolean));
         qc.setQueryData(["library"], updated);
+        toast({ tone: "ok", title: "Track reassigned", msg: `${selected?.title ?? "album"} · ${file.title || file.filename}` });
         onDone();
+      } else {
+        toast({ tone: "error", title: "Reassign failed", msg: res.error });
       }
     },
   });
@@ -934,7 +1150,7 @@ function TrackReassign({ file, onDone }: { file: LibraryFile; onDone: () => void
               {preview.changes.map((c) => (
                 <tr key={c.key} className="border-b border-white/5">
                   <td className="p-1 text-center">
-                    <input type="checkbox" className="size-3.5 accent-[#22d3ee]"
+                    <input type="checkbox" className="size-3.5 accent-accent"
                       checked={included[c.key.toLowerCase()] !== false}
                       onChange={(e) => setIncluded({ ...included, [c.key.toLowerCase()]: e.target.checked })} />
                   </td>

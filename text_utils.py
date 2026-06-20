@@ -70,20 +70,24 @@ def strip_accents(s: str) -> str:
 
 def _fold_base(s: str) -> str:
     """Shared foundation for both compare folds: typographic punctuation -> ASCII,
-    accents stripped, lowercased. Keeps the two folds consistent."""
-    return strip_accents(normalize_punctuation(s or "")).lower()
+    accents stripped, lowercased, and "&" unified to "and". Keeps the two folds
+    consistent — "Rock & Roll" and "Rock and Roll" compare equal everywhere."""
+    s = strip_accents(normalize_punctuation(s or "")).lower()
+    return s.replace("&", " and ")
 
 
 def fold_for_compare(s: str) -> str:
-    """Fold for title equality/contains checks: shared base, plus separator
-    punctuation unified, whitespace collapsed.
+    """Fold for title equality/contains checks: punctuation-insensitive.
 
-    Providers disagree on track-list separators ("Whine & Grine / Stand Down
-    Margaret" vs "… , …" vs "… ; …"), so comma / slash / semicolon are folded
-    to a single space — otherwise the same title fails to match."""
+    Shared base (typography, accents, case, & → and), then apostrophes are
+    dropped (so "She's" == "Shes") and every other punctuation/symbol becomes a
+    space before whitespace is collapsed. This makes matching tolerant of the
+    ways providers disagree on titles — "&" vs "and", parentheses, slashes,
+    commas, hyphens, etc. — without joining separate words.
+    Use on BOTH sides of a comparison."""
     s = _fold_base(s)
-    for sep in (",", "/", ";"):
-        s = s.replace(sep, " ")
+    s = s.replace("'", "")            # contractions/possessives: She's == Shes
+    s = re.sub(r"[^\w\s]", " ", s)    # any other punctuation/symbol -> space (keeps unicode letters)
     return " ".join(s.split())
 
 

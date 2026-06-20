@@ -9,7 +9,8 @@ Pins the two bugs fixed during v1 development:
 
 from mutagen.flac import FLAC
 
-from tagger import embed_metadata, read_metadata, build_metadata_from_release
+from tagger import (embed_metadata, read_metadata, build_metadata_from_release,
+                    update_raw_tags)
 
 
 class TestEmbedMetadataMerge:
@@ -47,6 +48,44 @@ class TestEmbedMetadataMerge:
         assert result["success"]
         audio = FLAC(flac_file)
         assert "GENRE" not in audio
+
+
+class TestUpdateRawTags:
+    """The advanced tag editor: set exactly what it's told, delete on empty."""
+
+    def test_sets_and_overwrites_arbitrary_tags(self, flac_file):
+        embed_metadata(flac_file, {"title": "Song", "genre": "Rock"})
+        result = update_raw_tags(flac_file, {"GENRE": "Jazz", "MOOD": "Mellow"})
+        assert result["success"]
+        audio = FLAC(flac_file)
+        assert audio["GENRE"] == ["Jazz"]      # overwritten, not merged
+        assert audio["MOOD"] == ["Mellow"]     # arbitrary new tag
+        assert audio["TITLE"] == ["Song"]      # untouched tag preserved
+
+    def test_empty_or_none_deletes_tag(self, flac_file):
+        embed_metadata(flac_file, {"title": "Song", "genre": "Rock", "comment": "x"})
+        update_raw_tags(flac_file, {"GENRE": "", "COMMENT": None})
+        audio = FLAC(flac_file)
+        assert "GENRE" not in audio
+        assert "COMMENT" not in audio
+        assert audio["TITLE"] == ["Song"]
+
+    def test_key_is_case_insensitive(self, flac_file):
+        embed_metadata(flac_file, {"title": "Song"})
+        update_raw_tags(flac_file, {"genre": "Rock"})
+        audio = FLAC(flac_file)
+        assert audio["GENRE"] == ["Rock"]
+
+    def test_never_touches_cover_art(self, flac_file):
+        from mutagen.flac import Picture
+        audio = FLAC(flac_file)
+        pic = Picture(); pic.type = 3; pic.mime = "image/jpeg"; pic.data = b"\xff\xd8\xff\xe0junk"
+        audio.add_picture(pic)
+        audio.save()
+        update_raw_tags(flac_file, {"METADATA_BLOCK_PICTURE": "garbage", "TITLE": "Song"})
+        reread = FLAC(flac_file)
+        assert reread.pictures, "cover art was dropped by a raw tag edit"
+        assert reread["TITLE"] == ["Song"]
 
     def test_multivalue_fields(self, flac_file):
         embed_metadata(flac_file, {"genre": ["Rock", "Blues"]})

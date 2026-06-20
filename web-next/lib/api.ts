@@ -38,6 +38,7 @@ export type Settings = Record<string, unknown> & {
   compression_level?: number;
   verify_encoding?: boolean;
   embed_album_art?: boolean;
+  add_replay_gain?: boolean;
   art_max_size?: number;
   multi_disc_style?: string;
   delete_wav_after_convert?: boolean;
@@ -144,6 +145,8 @@ export interface LibraryAlbum {
   genre: string;
   label: string;
   catalog_number: string;
+  barcode: string;
+  country: string;
   musicbrainz_albumid: string;
   has_art: boolean;
   disc_count: number;
@@ -256,6 +259,14 @@ export const api = {
   browseDialog: (kind: "folder" | "exe" = "folder") =>
     post<{ path: string }>("/api/settings/browse-dialog", { kind }),
 
+  getSecrets: () => get<Record<string, {
+    has_keys: boolean; keys: { name: string; value: string }[];
+  }>>("/api/secrets"),
+  putSecrets: (values: Record<string, string>) =>
+    put<{ success: boolean }>("/api/secrets", { values }),
+  testSecret: (provider: string) =>
+    post<{ ok: boolean; message: string }>(`/api/secrets/test/${provider}`),
+
   scanInput: (folder_path?: string) => post<ScanResult>("/api/input/scan", { folder_path }),
 
   identify: (req: {
@@ -299,6 +310,12 @@ export const api = {
   embeddedArt: (path: string) =>
     get<{ success: boolean; data?: string; width?: number; height?: number }>(
       `/api/library/embedded-art?path=${encodeURIComponent(path)}`),
+  updateTrackTags: (path: string, changes: Record<string, string | null>) =>
+    put<{ success: boolean; error?: string; tags: Record<string, string | string[]> }>(
+      "/api/library/tags", { path, changes }),
+  replayGain: (paths: string[]) =>
+    post<{ success: boolean; processed: number; errors: string[] }>(
+      "/api/library/replay-gain", { paths }),
   batchReassign: (req: { tracks: unknown[]; album_metadata: Record<string, string>;
                          art_release_id?: string | null; art_url?: string | null }) =>
     post<{ success: boolean; failed: number; total: number;

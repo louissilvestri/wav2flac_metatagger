@@ -128,6 +128,46 @@ def delete_library_file(flac_path: str, output_folder: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def update_track_tags(flac_path: str, changes: dict, output_folder: str) -> dict:
+    """Set/delete arbitrary tags on one library file (advanced tag editor).
+
+    Safety: only edits files inside output_folder.
+    """
+    from tagger import update_raw_tags
+
+    src = Path(flac_path)
+    if not src.exists():
+        return {"success": False, "error": "File not found", "tags": {}}
+    try:
+        src.relative_to(Path(output_folder))
+    except ValueError:
+        return {"success": False, "error": "File is not inside the output folder", "tags": {}}
+    return update_raw_tags(str(src), changes)
+
+
+def add_replay_gain_paths(paths: list[str], output_folder: str) -> dict:
+    """Compute ReplayGain tags for a set of library files (e.g. one album).
+
+    Safety: only analyzes FLACs inside output_folder.
+    """
+    from encoder import add_replay_gain
+
+    root = Path(output_folder)
+    valid = []
+    for p in paths:
+        pth = Path(p)
+        try:
+            pth.relative_to(root)
+        except ValueError:
+            continue
+        if pth.exists() and pth.suffix.lower() == ".flac":
+            valid.append(str(pth))
+    if not valid:
+        return {"success": False, "processed": 0,
+                "errors": ["No valid FLAC files inside the library"]}
+    return add_replay_gain(valid)
+
+
 def reassign_track_with_art(flac_path: str, new_metadata: dict,
                             output_folder: str, move_file: bool = True,
                             art_release_id: str | None = None,
