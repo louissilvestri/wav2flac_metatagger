@@ -462,6 +462,13 @@ def library_replay_gain(req: ReplayGainRequest):
     return library_service.add_replay_gain_paths(req.paths, output_folder)
 
 
+@app.post("/api/library/replay-gain-all")
+def library_replay_gain_all():
+    """Scan the whole library and apply ReplayGain to albums missing it."""
+    output_folder = load_settings().get("output_folder", "")
+    return library_service.apply_replay_gain_library(output_folder)
+
+
 @app.get("/api/library/original-album")
 def library_original_album(artist: str, title: str):
     from library_manager import find_original_album

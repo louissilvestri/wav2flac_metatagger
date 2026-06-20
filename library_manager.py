@@ -249,6 +249,12 @@ def group_library_by_album(files: list[dict]) -> list[dict]:
                 for f in group["files"]:
                     f["is_compilation"] = True
 
+        # ReplayGain is "present" only when every track carries a track-gain tag
+        # (a partially-analyzed album still offers the Add ReplayGain action).
+        group["has_replay_gain"] = bool(group["files"]) and all(
+            "REPLAYGAIN_TRACK_GAIN" in (f.get("all_tags") or {})
+            for f in group["files"])
+
         # Compute disc count from actual disc numbers in files
         disc_nums = set(int(f.get("discnumber") or "1") for f in group["files"])
         group["disc_count"] = len(disc_nums)

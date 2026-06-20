@@ -24,6 +24,12 @@ export default function SettingsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
   });
 
+  // Bulk ReplayGain over the whole library (albums missing it).
+  const rgAll = useMutation({
+    mutationFn: () => api.replayGainLibrary(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["library"] }),
+  });
+
   if (query.isError) return (
     <p className="font-mono text-sm text-alert">
       Failed to load settings: {String((query.error as Error)?.message ?? query.error)}
@@ -114,6 +120,29 @@ export default function SettingsPage() {
               checked={!!form.add_replay_gain}
               onChange={(e) => set("add_replay_gain", e.target.checked)} />
           </div>
+        </div>
+        <div className="mt-3 border-t border-white/10 pt-3">
+          <Button variant="outline" disabled={rgAll.isPending}
+                  onClick={() => rgAll.mutate()}>
+            {rgAll.isPending ? "Scanning library…" : "Scan Library and Apply ReplayGain Now"}
+          </Button>
+          <p className="mt-1 font-mono text-[0.68rem] text-muted">
+            Adds loudness tags to existing library albums that don’t have them yet.
+            Audio is never modified.
+          </p>
+          {rgAll.isSuccess && (
+            <p className="mt-1 font-mono text-[0.68rem] text-ok">
+              {rgAll.data.albums > 0
+                ? `Applied to ${rgAll.data.albums} album(s) (${rgAll.data.processed} files); ${rgAll.data.skipped} already had it.`
+                : `All ${rgAll.data.skipped} album(s) already have ReplayGain.`}
+              {rgAll.data.errors.length > 0 && ` · ${rgAll.data.errors.length} error(s): ${rgAll.data.errors.join("; ")}`}
+            </p>
+          )}
+          {rgAll.isError && (
+            <p className="mt-1 font-mono text-[0.68rem] text-alert">
+              Failed: {String((rgAll.error as Error)?.message ?? rgAll.error)}
+            </p>
+          )}
         </div>
       </Panel>
 

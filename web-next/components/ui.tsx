@@ -181,7 +181,7 @@ export function Tag({ tone = "ok", children }: { tone?: "ok" | "warn" | "alert";
     alert: "text-alert bg-alert/15",
   };
   return (
-    <span className={cx("rounded-full px-2 py-px text-[0.7rem] font-medium", tones[tone])}>
+    <span className={cx("inline-flex items-center rounded-full px-2 py-0.5 text-[0.7rem] font-medium leading-none", tones[tone])}>
       {children}
     </span>
   );

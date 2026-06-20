@@ -168,6 +168,46 @@ def add_replay_gain_paths(paths: list[str], output_folder: str) -> dict:
     return add_replay_gain(valid)
 
 
+def apply_replay_gain_library(output_folder: str) -> dict:
+    """Scan the whole library and apply ReplayGain to every album folder that
+    isn't already fully tagged. Whole folders are (re)analyzed together so album
+    gain stays correct; folders where every track already has track-gain are
+    skipped. Returns {success, albums, processed, skipped, errors}.
+    """
+    from collections import defaultdict
+    from library_manager import scan_library
+    from encoder import add_replay_gain
+
+    if not output_folder or not Path(output_folder).exists():
+        return {"success": False, "albums": 0, "processed": 0, "skipped": 0,
+                "errors": ["Output folder not configured or doesn't exist"]}
+
+    files = scan_library(output_folder)
+    by_dir: dict[str, list[dict]] = defaultdict(list)
+    for f in files:
+        by_dir[str(Path(f["path"]).parent)].append(f)
+
+    todo: list[str] = []
+    albums = skipped = 0
+    for entries in by_dir.values():
+        needs = any("REPLAYGAIN_TRACK_GAIN" not in (e.get("all_tags") or {})
+                    for e in entries)
+        if needs:
+            todo.extend(e["path"] for e in entries)
+            albums += 1
+        else:
+            skipped += 1
+
+    if not todo:
+        return {"success": True, "albums": 0, "processed": 0,
+                "skipped": skipped, "errors": []}
+
+    rg = add_replay_gain(todo)
+    return {"success": rg["success"], "albums": albums,
+            "processed": rg["processed"], "skipped": skipped,
+            "errors": rg["errors"]}
+
+
 def reassign_track_with_art(flac_path: str, new_metadata: dict,
                             output_folder: str, move_file: bool = True,
                             art_release_id: str | None = None,

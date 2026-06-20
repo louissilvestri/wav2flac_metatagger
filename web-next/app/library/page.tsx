@@ -207,10 +207,14 @@ function AlbumRow({ album }: { album: LibraryAlbum }) {
             <Button variant="outline" onClick={() => setCleanup(!cleanup)}>
               Quick Clean Up
             </Button>
-            <Button variant="ghost" disabled={replayGain.isPending}
-                    onClick={() => replayGain.mutate()}>
-              {replayGain.isPending ? "Analyzing…" : "Add ReplayGain"}
-            </Button>
+            {album.has_replay_gain ? (
+              <Tag tone="ok">ReplayGain present</Tag>
+            ) : (
+              <Button variant="ghost" disabled={replayGain.isPending}
+                      onClick={() => replayGain.mutate()}>
+                {replayGain.isPending ? "Analyzing…" : "Add ReplayGain"}
+              </Button>
+            )}
           </div>
           {cleanup && <QuickCleanup album={album} onClose={() => setCleanup(false)} />}
         </div>
