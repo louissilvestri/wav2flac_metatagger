@@ -30,6 +30,18 @@ def _download_art_raw(url: str) -> bytes | None:
         return None
 
 
+def _download_art(url: str, max_size: int, quality: int) -> bytes | None:
+    """Download a user-selected art URL and prepare it for embedding (resize +
+    JPEG). Used by library reassign/batch-reassign for user-picked art."""
+    raw = _download_art_raw(url)
+    if raw is None:
+        return None
+    try:
+        return prepare_art(raw, max_size, quality)
+    except Exception:
+        return None
+
+
 def _resolve_album_art(settings: dict, release_details: dict | None,
                        max_size: int, quality: int) -> tuple[bytes | None, dict]:
     """Fetch and prepare the album art, reporting what happened to it.

@@ -75,15 +75,18 @@ def find_release_candidates(artist: str = "", album: str = "",
                if provider_has_keys(p)}
     out: list[dict] = []
 
-    # ── Song search: no album, find which albums contain this track ──────────
+    # ── Song search: no album, find which editions contain this track ────────
     if not album.strip() and title.strip():
-        # MusicBrainz recording search is the only provider that answers
-        # "which albums is this song on?". Reuse the shared implementation.
-        from library_manager import find_original_album
-        for c in find_original_album(artist, title):
+        # MusicBrainz recording search is the only provider that answers "which
+        # releases is this song on?". Return every edition (not one per album) so
+        # the user can pick the exact pressing — same granularity as an album
+        # search, with the country/media/track-count filters to narrow it.
+        from library_manager import find_track_editions
+        for c in find_track_editions(artist, title):
             out.append(_candidate(
                 "musicbrainz", c.get("release_id"), c.get("album"), c.get("artist"),
-                c.get("first_release_date") or c.get("date"), c.get("country")))
+                c.get("date"), c.get("country"), c.get("format", ""),
+                "", c.get("total_tracks", 0), c.get("disc_count", 1)))
         deduped, seen = [], set()
         for c in out:
             if c["id"] and c["id"] not in seen:

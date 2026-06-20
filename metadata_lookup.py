@@ -63,7 +63,7 @@ def search_release(artist: str = None, album: str = None, tracks: int = None, ba
     query = " AND ".join(query_parts) if query_parts else ""
 
     try:
-        result = musicbrainzngs.search_releases(query=query, limit=10)
+        result = musicbrainzngs.search_releases(query=query, limit=25)
         releases = []
         for rel in result.get("release-list", []):
             medium_list = rel.get("medium-list", [])

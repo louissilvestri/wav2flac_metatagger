@@ -52,7 +52,7 @@ def search_release(artist: str = None, album: str = None, tracks: int = None) ->
         results = client.search(**kwargs)
 
         releases = []
-        for item in results.page(1)[:10]:
+        for item in results.page(1)[:25]:
             # Each item in search results is a Release object
             medium_info = item.data.get("format", [])
             format_str = ", ".join(medium_info) if isinstance(medium_info, list) else str(medium_info)

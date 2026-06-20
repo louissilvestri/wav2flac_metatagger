@@ -9,6 +9,7 @@ from file_manager import sanitize_filename, find_existing_folder, _normalize_for
 # Session-level caches (cleared on app restart)
 _cache_original_album = {}   # (artist_lower, title_lower) -> list of candidates
 _cache_original_album_by_name = {}  # (artist_lower, album_lower) -> list of candidates
+_cache_track_editions = {}   # (artist_lower, title_lower) -> list of editions
 _cache_release_details = {}  # release_id -> details dict
 _cache_art_options = {}      # release_group_id -> list of art options
 
@@ -268,11 +269,14 @@ def group_library_by_album(files: list[dict]) -> list[dict]:
     return result
 
 
-def _filter_sort_candidates(all_candidates: dict, exclude_compilations: bool = True) -> list[dict]:
-    """Shared logic: filter, look up first-release-date, sort, mark 'Likely Original'.
+def _filter_sort_candidates(all_candidates: dict) -> list[dict]:
+    """Sort candidate release groups for display — NEVER drops any.
 
-    Takes a dict of {release_group_id: candidate_info} and returns a sorted list.
-    If exclude_compilations=False, all album types are included (for direct album lookups).
+    Every release group a track/album maps to is returned. Clean studio albums
+    (primary type Album with no compilation/live/soundtrack/etc. secondary type)
+    sort first and the earliest is marked the likely original; compilations, live
+    albums, EPs, singles, and everything else follow but are always included.
+    Nothing is filtered out — the user wants to see every album a track is on.
     """
     import musicbrainzngs
     from metadata_lookup import _rate_limit
@@ -280,48 +284,45 @@ def _filter_sort_candidates(all_candidates: dict, exclude_compilations: bool = T
     if not all_candidates:
         return []
 
-    skip_types = _SKIP_SECONDARY if exclude_compilations else set()
+    def is_clean_album(info: dict) -> bool:
+        return (info["type"] == "Album"
+                and not _SKIP_SECONDARY.intersection(info["secondary_types"]))
 
-    # Separate studio albums (Album type with no disqualifying secondary types)
-    studio = {}
-    other = {}
-    for rg_id, info in all_candidates.items():
-        if info["type"] == "Album" and not skip_types.intersection(info["secondary_types"]):
-            studio[rg_id] = info
-        else:
-            other[rg_id] = info
+    # Look up first-release-date for clean studio albums so originals order
+    # correctly (compilations/singles sort by their own release date).
+    for info in all_candidates.values():
+        if is_clean_album(info):
+            _rate_limit()
+            try:
+                rg_detail = musicbrainzngs.get_release_group_by_id(info["release_group_id"])
+                info["first_release_date"] = (
+                    rg_detail.get("release-group", {}).get("first-release-date", ""))
+            except Exception:
+                pass
 
-    # For studio albums, look up the release group to get first-release-date
-    for rg_id, info in studio.items():
-        _rate_limit()
-        try:
-            rg_detail = musicbrainzngs.get_release_group_by_id(rg_id)
-            rg_info = rg_detail.get("release-group", {})
-            info["first_release_date"] = rg_info.get("first-release-date", "")
-        except Exception:
-            pass
-
-    # Build final list: studio albums first, then EPs, then singles
     type_priority = {"Album": 0, "EP": 1, "Single": 2}
-    candidates = list(studio.values())
-
-    for rg_id, info in other.items():
-        if info["type"] in ("EP", "Single") and not skip_types.intersection(info["secondary_types"]):
-            candidates.append(info)
-
-    # Sort by type priority, then by first_release_date ascending
-    candidates.sort(key=lambda c: (
-        type_priority.get(c["type"], 3),
+    candidates = sorted(all_candidates.values(), key=lambda c: (
+        0 if is_clean_album(c) else 1,            # clean studio albums first
+        type_priority.get(c["type"], 3),          # then Album / EP / Single / other
         c["first_release_date"] or c["date"] or "9999",
     ))
 
-    # Mark the earliest studio album as the likely original
+    # Mark the earliest clean studio album as the likely original.
     for c in candidates:
-        if c["type"] == "Album":
+        if is_clean_album(c):
             c["is_original"] = True
             break
 
     return candidates
+
+
+def _release_rank(rel: dict) -> tuple:
+    """Pick a sensible representative release within a release group: prefer an
+    Official status, then the earliest date. Keeps a region-specific reissue
+    (e.g. a Spanish pressing) from masquerading as the album when a canonical
+    official release exists."""
+    status = (rel.get("status") or "").lower()
+    return (0 if status == "official" else 1, rel.get("date") or "9999")
 
 
 def _artist_loosely_matches(a: str, b: str) -> bool:
@@ -339,24 +340,21 @@ def _artist_loosely_matches(a: str, b: str) -> bool:
     return a in b or b in a
 
 
-def find_original_album(artist: str, title: str) -> list[dict]:
-    """Search MusicBrainz for the original studio album a track appeared on.
+def _search_track_recordings(artist: str, title: str) -> list[dict]:
+    """Find MusicBrainz recordings matching a track (artist + title).
 
-    Searches by recording (artist + track title), groups by release group,
-    filters non-originals, sorts by original release date.
-    Cached by (artist, title).
+    Runs a strict artist+recording query, then a title-only query whose hits are
+    kept only when the artist credit loosely matches — this rescues releases
+    credited under a regional name variant ("The Beat" vs "The English Beat").
+    Shared by find_original_album (one album per group) and find_track_editions
+    (every edition), so both see the same recording set.
     """
-    cache_key = (artist.lower().strip(), title.lower().strip())
-    if cache_key in _cache_original_album:
-        return _cache_original_album[cache_key]
-
     import musicbrainzngs
     from metadata_lookup import init_musicbrainz, _rate_limit
+    from text_utils import lucene_phrase
 
     init_musicbrainz()
     _rate_limit()
-
-    from text_utils import lucene_phrase, fold_for_compare
     try:
         result = musicbrainzngs.search_recordings(
             query=f'artist:"{lucene_phrase(artist)}" AND recording:"{lucene_phrase(title)}"',
@@ -367,12 +365,6 @@ def find_original_album(artist: str, title: str) -> list[dict]:
 
     recordings = result.get("recording-list", [])
 
-    # Some bands are credited under regional name variants on individual
-    # releases (e.g. "The Beat" vs "The English Beat"), which a strict
-    # artist-field query may miss for some releases even when it matches
-    # others. Always also search by title alone and add any recordings whose
-    # artist credit loosely matches, so the studio release isn't dropped just
-    # because a different (e.g. live) release matched the strict query.
     _rate_limit()
     try:
         title_only_result = musicbrainzngs.search_recordings(
@@ -393,12 +385,30 @@ def find_original_album(artist: str, title: str) -> list[dict]:
             recordings.append(rec)
             seen_rec_ids.add(rec.get("id"))
 
+    return recordings
+
+
+def find_original_album(artist: str, title: str) -> list[dict]:
+    """Search MusicBrainz for the original studio album a track appeared on.
+
+    Searches by recording (artist + track title), groups by release group,
+    sorts originals first. One entry per album (release group). Cached by
+    (artist, title). For every individual edition, see find_track_editions.
+    """
+    cache_key = (artist.lower().strip(), title.lower().strip())
+    if cache_key in _cache_original_album:
+        return _cache_original_album[cache_key]
+
+    from text_utils import fold_for_compare
+    recordings = _search_track_recordings(artist, title)
     if not recordings:
         _cache_original_album[cache_key] = []
         return []
 
-    # Collect unique release groups from recording results
-    seen_rg = set()
+    # Collect one entry per release group. When a track appears on several
+    # releases of the same album, keep the best representative (Official first,
+    # then earliest) rather than whichever happened to be seen first — otherwise
+    # a regional reissue can stand in for the canonical album.
     all_candidates = {}
     title_lower = fold_for_compare(title)
 
@@ -410,9 +420,13 @@ def find_original_album(artist: str, title: str) -> list[dict]:
         for rel in rec.get("release-list", []):
             rg = rel.get("release-group", {})
             rg_id = rg.get("id")
-            if not rg_id or rg_id in seen_rg:
+            if not rg_id:
                 continue
-            seen_rg.add(rg_id)
+
+            rank = _release_rank(rel)
+            existing = all_candidates.get(rg_id)
+            if existing is not None and existing["_rank"] <= rank:
+                continue
 
             rg_primary = rg.get("primary-type", rg.get("type", ""))
             rg_secondary = set(rg.get("secondary-type-list", []))
@@ -435,11 +449,87 @@ def find_original_album(artist: str, title: str) -> list[dict]:
                 "secondary_types": sorted(rg_secondary),
                 "country": rel.get("country", ""),
                 "is_original": False,
+                "_rank": rank,
             }
 
+    for c in all_candidates.values():
+        c.pop("_rank", None)
     candidates = _filter_sort_candidates(all_candidates)
     _cache_original_album[cache_key] = candidates
     return candidates
+
+
+def find_track_editions(artist: str, title: str) -> list[dict]:
+    """Every release (edition) a track appears on — not collapsed to one per
+    album. This is the song-search counterpart to an album-name search: it lets
+    the user pick the exact edition (e.g. the UK vs Spanish pressing of
+    "Prince Charming") instead of a single arbitrary representative.
+
+    Deduped by release id, sorted clean studio albums first, then by album,
+    Official editions, and date. Cached by (artist, title).
+    """
+    cache_key = (artist.lower().strip(), title.lower().strip())
+    if cache_key in _cache_track_editions:
+        return _cache_track_editions[cache_key]
+
+    from text_utils import fold_for_compare
+    recordings = _search_track_recordings(artist, title)
+    if not recordings:
+        _cache_track_editions[cache_key] = []
+        return []
+
+    title_lower = fold_for_compare(title)
+    by_release: dict[str, dict] = {}
+
+    for rec in recordings:
+        rec_title = fold_for_compare(rec.get("title", ""))
+        if title_lower not in rec_title and rec_title not in title_lower:
+            continue
+
+        rec_artist = ""
+        if rec.get("artist-credit"):
+            ac = rec["artist-credit"]
+            if ac and isinstance(ac[0], dict):
+                rec_artist = (ac[0].get("name", "")
+                              or ac[0].get("artist", {}).get("name", ""))
+
+        for rel in rec.get("release-list", []):
+            rel_id = rel.get("id")
+            if not rel_id or rel_id in by_release:
+                continue
+
+            rg = rel.get("release-group", {})
+            medium_list = rel.get("medium-list", [])
+            total_tracks = sum(int(m.get("track-count", 0)) for m in medium_list)
+            fmt = medium_list[0].get("format", "") if medium_list else ""
+
+            by_release[rel_id] = {
+                "release_id": rel_id,
+                "release_group_id": rg.get("id", ""),
+                "album": rg.get("title", rel.get("title", "")),
+                "artist": rec_artist or artist,
+                "date": rel.get("date", ""),
+                "country": rel.get("country", ""),
+                "format": fmt,
+                "type": rg.get("primary-type", rg.get("type", "")),
+                "secondary_types": sorted(set(rg.get("secondary-type-list", []))),
+                "status": rel.get("status", ""),
+                "total_tracks": total_tracks,
+                "disc_count": len(medium_list) or 1,
+            }
+
+    def is_clean_album(info: dict) -> bool:
+        return (info["type"] == "Album"
+                and not _SKIP_SECONDARY.intersection(info["secondary_types"]))
+
+    editions = sorted(by_release.values(), key=lambda c: (
+        0 if is_clean_album(c) else 1,             # studio albums first
+        c["album"].lower(),                         # editions of an album grouped
+        0 if (c.get("status", "").lower() == "official") else 1,
+        c["date"] or "9999",
+    ))
+    _cache_track_editions[cache_key] = editions
+    return editions
 
 
 def find_original_album_by_name(artist: str, album_name: str) -> list[dict]:
@@ -476,16 +566,20 @@ def find_original_album_by_name(artist: str, album_name: str) -> list[dict]:
         _cache_original_album_by_name[cache_key] = []
         return []
 
-    # Group by release group
-    seen_rg = set()
+    # Group by release group, keeping the best representative release per group
+    # (Official first, then earliest) rather than whichever sorted highest.
     all_candidates = {}
 
     for rel in releases:
         rg = rel.get("release-group", {})
         rg_id = rg.get("id")
-        if not rg_id or rg_id in seen_rg:
+        if not rg_id:
             continue
-        seen_rg.add(rg_id)
+
+        rank = _release_rank(rel)
+        existing = all_candidates.get(rg_id)
+        if existing is not None and existing["_rank"] <= rank:
+            continue
 
         rg_primary = rg.get("primary-type", rg.get("type", ""))
         rg_secondary = set(rg.get("secondary-type-list", []))
@@ -506,10 +600,13 @@ def find_original_album_by_name(artist: str, album_name: str) -> list[dict]:
             "country": rel.get("country", ""),
             "total_tracks": total_tracks,
             "is_original": False,
+            "_rank": rank,
         }
 
-    # Don't exclude compilations — the user is deliberately searching for this album
-    candidates = _filter_sort_candidates(all_candidates, exclude_compilations=False)
+    # Never exclude compilations/live/etc. — show every album that matches.
+    for c in all_candidates.values():
+        c.pop("_rank", None)
+    candidates = _filter_sort_candidates(all_candidates)
     _cache_original_album_by_name[cache_key] = candidates
     return candidates
 
