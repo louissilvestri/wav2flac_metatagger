@@ -43,8 +43,10 @@ def embed_metadata(flac_path: str, metadata: dict, album_art: bytes = None) -> d
         "country": "RELEASECOUNTRY",
         "releasecountry": "RELEASECOUNTRY",
         "catalognumber": "CATALOGNUMBER",
-        "label": "ORGANIZATION",
-        "organization": "ORGANIZATION",
+        # Record label → every tag a player/Explorer might read for "Publisher".
+        "label": ["ORGANIZATION", "PUBLISHER", "LABEL"],
+        "organization": ["ORGANIZATION", "PUBLISHER", "LABEL"],
+        "publisher": ["ORGANIZATION", "PUBLISHER", "LABEL"],
         "media": "MEDIA",
         "copyright": "COPYRIGHT",
         "comment": "COMMENT",
@@ -66,12 +68,16 @@ def embed_metadata(flac_path: str, metadata: dict, album_art: bytes = None) -> d
             continue
 
         field_name = FIELD_MAP.get(key.lower(), key.upper())
+        # One metadata key may fan out to several Vorbis tags (e.g. label →
+        # ORGANIZATION/PUBLISHER/LABEL so Explorer's "Publisher" populates).
+        targets = field_name if isinstance(field_name, list) else [field_name]
 
         # Handle multi-value fields (lists become repeated Vorbis Comment entries)
-        if isinstance(value, list):
-            audio[field_name] = [str(v) for v in value if v]
-        else:
-            audio[field_name] = [str(value)]
+        for tag_name in targets:
+            if isinstance(value, list):
+                audio[tag_name] = [str(v) for v in value if v]
+            else:
+                audio[tag_name] = [str(value)]
         fields_written += 1
 
     # Always set encoder tag

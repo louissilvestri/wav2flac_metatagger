@@ -75,6 +75,8 @@ DEFAULT_SETTINGS = {
     "verify_encoding": True,
     "embed_album_art": True,
     "add_replay_gain": True,
+    "fetch_performer_credits": True,
+    "cross_provider_backfill": True,
     "art_max_size": 1200,
     "art_quality": 90,
     "plex_folder_format": "{artist}/{album} ({year})",

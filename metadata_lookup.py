@@ -27,6 +27,84 @@ def _rate_limit():
     _last_request_time = time.time()
 
 
+_cache_recording_credits = {}  # recording_id -> {composer, lyricist, conductor, performer}
+
+
+def get_recording_credits(recording_id: str) -> dict:
+    """Performer/writer credits for a recording, from MusicBrainz relationships.
+
+    Conductor and performers come from the recording's artist relationships;
+    composer and lyricist come from the linked work(s). Best-effort — returns {}
+    on any failure so it can never break conversion. Cached by recording id.
+    Note: this costs 1 + (number of works) rate-limited API calls per recording.
+    """
+    if not recording_id:
+        return {}
+    if recording_id in _cache_recording_credits:
+        return _cache_recording_credits[recording_id]
+
+    init_musicbrainz()
+    out = {"composer": [], "lyricist": [], "conductor": [], "performer": []}
+    try:
+        _rate_limit()
+        rec = musicbrainzngs.get_recording_by_id(
+            recording_id, includes=["artist-rels", "work-rels"]).get("recording", {})
+    except Exception:
+        _cache_recording_credits[recording_id] = {}
+        return {}
+
+    for rel in rec.get("artist-relation-list", []):
+        name = rel.get("artist", {}).get("name", "")
+        if not name:
+            continue
+        rtype = rel.get("type", "")
+        if rtype == "conductor":
+            out["conductor"].append(name)
+        elif rtype in ("performer", "vocal", "instrument", "performing orchestra"):
+            out["performer"].append(name)
+
+    work_ids = [rel.get("work", {}).get("id")
+                for rel in rec.get("work-relation-list", [])
+                if rel.get("work", {}).get("id")]
+    for wid in work_ids:
+        try:
+            _rate_limit()
+            work = musicbrainzngs.get_work_by_id(
+                wid, includes=["artist-rels"]).get("work", {})
+        except Exception:
+            continue
+        for rel in work.get("artist-relation-list", []):
+            name = rel.get("artist", {}).get("name", "")
+            if not name:
+                continue
+            rtype = rel.get("type", "")
+            if rtype == "composer":
+                out["composer"].append(name)
+            elif rtype in ("lyricist", "writer"):
+                out["lyricist"].append(name)
+
+    # Drop empties; de-dupe each list preserving order.
+    result = {k: list(dict.fromkeys(v)) for k, v in out.items() if v}
+    _cache_recording_credits[recording_id] = result
+    return result
+
+
+def merge_credits(metadata: dict, settings: dict | None = None) -> None:
+    """Fill composer/lyricist/conductor/performer on a track's metadata in place
+    from MusicBrainz, when enabled and a recording id is present. Best-effort;
+    only fills fields that are empty so existing/EAC values win."""
+    settings = settings or load_settings()
+    if not settings.get("fetch_performer_credits"):
+        return
+    rid = metadata.get("musicbrainz_trackid")
+    if not rid:
+        return
+    credits = get_recording_credits(rid)
+    for field in ("composer", "lyricist", "conductor", "performer"):
+        if credits.get(field) and not metadata.get(field):
+            metadata[field] = credits[field]
+
+
 def init_musicbrainz():
     """Initialize musicbrainzngs user-agent (only runs once per session)."""
     global _musicbrainz_initialized

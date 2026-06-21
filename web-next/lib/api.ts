@@ -39,6 +39,8 @@ export type Settings = Record<string, unknown> & {
   verify_encoding?: boolean;
   embed_album_art?: boolean;
   add_replay_gain?: boolean;
+  fetch_performer_credits?: boolean;
+  cross_provider_backfill?: boolean;
   art_max_size?: number;
   multi_disc_style?: string;
   delete_wav_after_convert?: boolean;

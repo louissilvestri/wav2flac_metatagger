@@ -5,6 +5,64 @@ can show a source chip and offer alternates.
 """
 
 from config import load_settings
+from text_utils import fold_for_compare
+
+
+# ── Per-track cross-provider merge ────────────────────────────────────────────
+# Track-level fields that can be borrowed from a second provider when the primary
+# leaves them empty. (ISRC has no second source among our providers, but it's
+# listed so a future provider that supplies it works for free.)
+_TRACK_FILL_FIELDS = ("length_ms", "isrc", "title", "artist")
+
+
+def _titles_compatible(a: str, b: str) -> bool:
+    """Guard against cross-filling misaligned tracks (e.g. a bonus track shifting
+    positions between editions). Empty/unknown titles can't be compared, so they
+    pass — that's what lets a blank primary title be filled."""
+    fa, fb = fold_for_compare(a or ""), fold_for_compare(b or "")
+    if not fa or not fb:
+        return True
+    return fa == fb or fa in fb or fb in fa
+
+
+def _fill_track(dst: dict, src: dict) -> None:
+    if not _titles_compatible(dst.get("title", ""), src.get("title", "")):
+        return
+    for f in _TRACK_FILL_FIELDS:
+        if not dst.get(f) and src.get(f):
+            dst[f] = src[f]
+
+
+def merge_tracks(primary: list[dict], secondary: list[dict]) -> list[dict]:
+    """Fill empty per-track fields on `primary` from `secondary`, matched by
+    (disc_number, position). Primary values always win; tracks are never added or
+    removed. Both lists are flat track dicts carrying 'disc_number'. In place."""
+    if not primary or not secondary:
+        return primary
+    idx = {(t.get("disc_number", 1), t.get("position")): t for t in secondary}
+    for t in primary:
+        m = idx.get((t.get("disc_number", 1), t.get("position")))
+        if m:
+            _fill_track(t, m)
+    return primary
+
+
+def merge_disc_tracks(primary_discs: list[dict], secondary_discs: list[dict]) -> None:
+    """merge_tracks for the disc-structured release shape (details['discs']).
+    Mutates primary_discs in place."""
+    if not primary_discs or not secondary_discs:
+        return
+    idx = {}
+    for d in secondary_discs:
+        dp = d.get("position", 1)
+        for t in d.get("tracks", []):
+            idx[(dp, t.get("position"))] = t
+    for d in primary_discs:
+        dp = d.get("position", 1)
+        for t in d.get("tracks", []):
+            m = idx.get((dp, t.get("position")))
+            if m:
+                _fill_track(t, m)
 
 # Which provider wins each field, in order. Editable via settings
 # ("merge_precedence" key) without code changes.

@@ -29,19 +29,81 @@ def search_releases(artist=None, album=None, track_count=None, settings=None) ->
         return search_release(artist=artist, album=album, tracks=track_count)
 
 
+# Album-level fields that can be gap-filled from the other provider. Per-track
+# data (ISRC, recording IDs) is excluded — it needs track-by-track matching.
+_BACKFILL_FIELDS = ["genre", "genres", "styles", "label", "catalog_number",
+                    "barcode", "country", "date", "first_release_date"]
+
+
+def _backfill_release(details: dict, settings: dict) -> dict:
+    """Fill EMPTY album-level fields on a release from the other provider, so a
+    chosen edition isn't missing data one provider happens to lack (e.g. genre on
+    a MusicBrainz edition). The primary provider's values always win — only gaps
+    are filled. Best-effort and gated by `cross_provider_backfill`."""
+    if not settings.get("cross_provider_backfill", True):
+        return details
+    if not isinstance(details, dict) or details.get("error"):
+        return details
+
+    missing = [f for f in _BACKFILL_FIELDS if not details.get(f)]
+    # Also fetch the other provider when any track is missing a length — the one
+    # per-track field a second provider can realistically supply.
+    tracks_need = any(
+        not t.get("length_ms")
+        for d in details.get("discs", []) for t in d.get("tracks", []))
+    if not missing and not tracks_need:
+        return details
+    artist, album = details.get("artist", ""), details.get("title", "")
+    if not (artist and album):
+        return details
+
+    from services.art import is_discogs_id
+    other = {}
+    try:
+        if is_discogs_id(str(details.get("id", ""))):
+            # Discogs edition → fill from MusicBrainz.
+            from metadata_lookup import search_release, get_release_details
+            hits = search_release(artist=artist, album=album)
+            if hits and not hits[0].get("error"):
+                other = get_release_details(hits[0]["id"])
+        else:
+            # MusicBrainz edition → fill from Discogs.
+            from discogs_lookup import search_release, get_release_details
+            hits = search_release(artist=strip_various_artist(artist), album=album)
+            if hits and not hits[0].get("error"):
+                other = get_release_details(str(hits[0]["id"]))
+    except Exception:
+        other = {}
+
+    if isinstance(other, dict) and not other.get("error"):
+        for f in missing:
+            if other.get(f):
+                details[f] = other[f]
+        # Per-track gap-fill (lengths/titles) from the other provider's tracklist.
+        if other.get("discs") and details.get("discs"):
+            from services.metadata.merge import merge_disc_tracks
+            merge_disc_tracks(details["discs"], other["discs"])
+    return details
+
+
 def get_release(release_id: str, settings=None) -> dict:
     """Get full release details (track listing etc.), routing by the ID's OWN
     shape — Discogs IDs are integers, MusicBrainz IDs are UUIDs. Routing by a
     global setting breaks cross-provider lookups (e.g. a MusicBrainz original-
-    album candidate fetched while the provider setting says 'discogs')."""
+    album candidate fetched while the provider setting says 'discogs').
+
+    Empty album-level fields are then gap-filled from the other provider
+    (MusicBrainz primary, Discogs fallback) unless disabled in settings."""
     from services.art import is_discogs_id
 
+    settings = settings or load_settings()
     if is_discogs_id(release_id):
         from discogs_lookup import get_release_details as discogs_details
-        return discogs_details(release_id)
+        details = discogs_details(release_id)
     else:
         from metadata_lookup import get_release_details
-        return get_release_details(release_id)
+        details = get_release_details(release_id)
+    return _backfill_release(details, settings)
 
 
 def find_album_by_name(artist: str, album_name: str, settings=None):

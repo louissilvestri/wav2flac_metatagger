@@ -12,7 +12,7 @@ Cover Art Archive — each optional, each failure-tolerant.
 
 from config import load_settings
 from services.metadata import cache
-from services.metadata.merge import merge_fields, get_precedence
+from services.metadata.merge import merge_fields, get_precedence, merge_tracks
 from services.metadata.providers import (
     musicbrainz as mb,
     discogs as dg,
@@ -110,6 +110,7 @@ def identify(
 
     field_sets = []
     tracks = []
+    dg_tracks = []
     track_source = ""
     art_candidates = []
 
@@ -147,12 +148,13 @@ def identify(
                     providers_status["discogs"] = "ok"
                     ids["discogs_release"] = dg_details.get("id", "")
                     field_sets.append(dg.extract_fields(dg_details))
+                    dg_tracks = [
+                        {**t, "disc_number": d["position"]}
+                        for d in dg_details.get("discs", [])
+                        for t in d.get("tracks", [])
+                    ]
                     if not tracks:
-                        tracks = [
-                            {**t, "disc_number": d["position"]}
-                            for d in dg_details.get("discs", [])
-                            for t in d.get("tracks", [])
-                        ]
+                        tracks = dg_tracks
                         track_source = "discogs"
                     for img in dg.get_art_urls(dg_details["id"])[:2]:
                         art_candidates.append({"source": "discogs", **img})
@@ -217,6 +219,11 @@ def identify(
                 providers_status["fanarttv"] = "no art"
         except Exception as e:
             providers_status["fanarttv"] = f"failed: {e}"
+
+    # Cross-provider per-track gap-fill: when MusicBrainz drives the tracklist,
+    # borrow empty per-track fields (e.g. lengths) from Discogs' tracklist.
+    if track_source == "musicbrainz" and dg_tracks:
+        merge_tracks(tracks, dg_tracks)
 
     merged = merge_fields(field_sets, get_precedence(settings))
 

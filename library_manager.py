@@ -809,6 +809,11 @@ def reassign_track(
             cur = cur[0] if cur else ""
         return str(cur) if cur else default
 
+    # Enrich with MusicBrainz performer/writer credits (gated by setting,
+    # best-effort) so reassign/clean-up populate the same fields as conversion.
+    from metadata_lookup import merge_credits
+    merge_credits(new_metadata)
+
     # Re-tag in place (with optional new album art)
     tag_result = embed_metadata(str(src), new_metadata, album_art=album_art)
     if not tag_result["success"]:

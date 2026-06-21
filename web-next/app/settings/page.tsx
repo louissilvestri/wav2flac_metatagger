@@ -119,6 +119,12 @@ export default function SettingsPage() {
             <Checkbox label="Calculate ReplayGain (loudness) tags"
               checked={!!form.add_replay_gain}
               onChange={(e) => set("add_replay_gain", e.target.checked)} />
+            <Checkbox label="Fetch performer credits (composer, conductor… — slower)"
+              checked={!!form.fetch_performer_credits}
+              onChange={(e) => set("fetch_performer_credits", e.target.checked)} />
+            <Checkbox label="Fill missing fields from Discogs when MusicBrainz lacks them"
+              checked={!!form.cross_provider_backfill}
+              onChange={(e) => set("cross_provider_backfill", e.target.checked)} />
           </div>
         </div>
         <div className="mt-3 border-t border-white/10 pt-3">

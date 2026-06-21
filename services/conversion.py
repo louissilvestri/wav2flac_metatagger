@@ -253,6 +253,11 @@ def run_conversion(
 
         metadata = _build_track_metadata(release_details, file_info,
                                          track_number, disc_number)
+        # Optionally enrich with performer/writer credits (composer, conductor,
+        # …) from MusicBrainz. Best-effort and gated by a setting — it adds
+        # rate-limited lookups per track.
+        from metadata_lookup import merge_credits
+        merge_credits(metadata, settings)
 
         row_id = log_conversion(
             source_path=wav_path,

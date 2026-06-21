@@ -76,6 +76,19 @@ class TestUpdateRawTags:
         audio = FLAC(flac_file)
         assert audio["GENRE"] == ["Rock"]
 
+class TestPublisherFanout:
+    def test_label_writes_publisher_and_label_tags(self, flac_file):
+        """Label fans out to ORGANIZATION/PUBLISHER/LABEL so Windows Explorer's
+        Publisher field (and other players) populate."""
+        result = embed_metadata(flac_file, {"label": "Fantasy Records"})
+        assert result["success"]
+        audio = FLAC(flac_file)
+        assert audio["ORGANIZATION"] == ["Fantasy Records"]
+        assert audio["PUBLISHER"] == ["Fantasy Records"]
+        assert audio["LABEL"] == ["Fantasy Records"]
+
+
+class TestUpdateRawTagsArt:
     def test_never_touches_cover_art(self, flac_file):
         from mutagen.flac import Picture
         audio = FLAC(flac_file)
