@@ -43,6 +43,12 @@ DG_DETAILS = {
 
 @pytest.fixture
 def patched_providers(monkeypatch):
+    # Enable every provider regardless of whether an API key is configured in the
+    # environment — these tests monkeypatch the provider calls, so key-gating
+    # must not silently drop them (it does on a keyless CI runner).
+    import config
+    monkeypatch.setattr(config, "provider_has_keys", lambda p: True)
+
     from services.metadata.providers import musicbrainz as mb_mod
     from services.metadata.providers import discogs as dg_mod
     from services.metadata.providers import itunes as it_mod
