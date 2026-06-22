@@ -1,4 +1,4 @@
-"""Live validation of the Phase 2 aggregator (exit criteria from REFACTOR_PLAN).
+"""Live validation of the Phase 2 aggregator.
 
 Run manually: python scripts/test_aggregator_live.py [flac_path_for_fingerprint]
 """

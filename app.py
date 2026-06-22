@@ -2,7 +2,7 @@
 
 All business logic lives in services/ (shared with the FastAPI server in
 server/). This module is only the Eel transport layer plus the desktop
-launcher, and is retired at the end of the v2 refactor (REFACTOR_PLAN.md).
+launcher, and is retired at the end of the v2 refactor.
 """
 
 import eel

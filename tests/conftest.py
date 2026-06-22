@@ -1,7 +1,7 @@
 """Shared fixtures for characterization tests.
 
 These tests pin the CURRENT behavior of Music Manager v1 so the v2 refactor
-(see REFACTOR_PLAN.md) can prove it didn't regress anything.
+can prove it didn't regress anything.
 """
 
 import struct
