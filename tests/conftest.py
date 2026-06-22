@@ -33,9 +33,21 @@ def isolate_config(monkeypatch, tmp_path):
     cfg_dir = tmp_path / "config"
     cfg_dir.mkdir()
     cfg_file = cfg_dir / "settings.json"
+    db_file = cfg_dir / "activity.db"
     monkeypatch.setattr(config, "CONFIG_DIR", cfg_dir)
     monkeypatch.setattr(config, "CONFIG_FILE", cfg_file)
     monkeypatch.setattr(config, "SECRETS_FILE", cfg_dir / "secrets.json")
+    monkeypatch.setattr(config, "DB_FILE", db_file)
+    # database.py did `from config import DB_FILE`, binding the value at import,
+    # so patch the name in that module too — otherwise tests open the real DB.
+    import database
+    monkeypatch.setattr(database, "DB_FILE", db_file)
+    # Create the schema in the isolated DB so DB-backed tests (jobs, conversion
+    # log) have their tables; the app's lifespan that normally does this is not
+    # run by the bare TestClient.
+    database.init_db()
+    from server.jobs import init_jobs_table
+    init_jobs_table()
 
     # Seed only the FLAC encoder path so conversion tests can still encode;
     # everything else falls back to defaults (no machine-specific overrides).

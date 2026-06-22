@@ -6,6 +6,7 @@ were omitted from album_metadata, and build_output_path defaulted them.
 """
 
 import shutil
+from pathlib import Path
 
 from tagger import embed_metadata
 from library_manager import reassign_track
@@ -45,7 +46,7 @@ def test_date_only_update_keeps_artist_and_album(flac_file, tmp_path):
     result = reassign_track(str(dest), {"date": "1978"}, str(root), move_file=True)
 
     assert result["success"], result.get("error")
-    parts = result["new_path"].split("\\")
+    parts = Path(result["new_path"]).parts
     assert "Steely Dan" in parts
     assert not (root / "Unknown Artist").exists()
     assert not any("Unknown Album" in p for p in parts)
