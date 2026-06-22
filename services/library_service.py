@@ -43,11 +43,17 @@ def scan_library_full(output_folder: str) -> dict:
     """Scan a library folder: albums, duplicates, summary stats."""
     from library_manager import scan_library
 
-    if not output_folder or not Path(output_folder).exists():
-        return {"error": "Output folder not configured or doesn't exist",
+    try:
+        if not output_folder or not Path(output_folder).exists():
+            return {"error": "Output folder not configured or doesn't exist",
+                    "albums": [], "total_files": 0}
+        files = scan_library(output_folder)
+    except OSError as e:
+        # A network share that went away mid-scan, permissions, etc. — report it
+        # cleanly instead of 500ing the whole library view.
+        return {"error": f"Could not read the output folder: {e}",
                 "albums": [], "total_files": 0}
 
-    files = scan_library(output_folder)
     _scan_cache[_norm(output_folder)] = files
     return _build_scan_result(files, output_folder)
 
@@ -168,44 +174,80 @@ def add_replay_gain_paths(paths: list[str], output_folder: str) -> dict:
     return add_replay_gain(valid)
 
 
-def apply_replay_gain_library(output_folder: str) -> dict:
+def apply_replay_gain_library(output_folder: str, on_progress=None,
+                              on_file_done=None, is_cancelled=None) -> dict:
     """Scan the whole library and apply ReplayGain to every album folder that
     isn't already fully tagged. Whole folders are (re)analyzed together so album
     gain stays correct; folders where every track already has track-gain are
-    skipped. Returns {success, albums, processed, skipped, errors}.
+    skipped.
+
+    Designed to run as a background job: it reports progress per album folder via
+    the optional callbacks (same shape as the conversion runner) and stops early
+    when is_cancelled() turns true. Returns a result that doubles as a job
+    result: {completed, failed, total, cancelled, albums, processed, skipped,
+    errors}.
     """
     from collections import defaultdict
     from library_manager import scan_library
     from encoder import add_replay_gain
 
+    on_progress = on_progress or (lambda p: None)
+    on_file_done = on_file_done or (lambda r: None)
+    is_cancelled = is_cancelled or (lambda: False)
+
+    def _result(total, albums, processed, skipped, errors, cancelled=False):
+        return {"completed": albums, "failed": len(errors), "total": total,
+                "cancelled": cancelled, "success": not errors and not cancelled,
+                "albums": albums, "processed": processed, "skipped": skipped,
+                "errors": errors}
+
     if not output_folder or not Path(output_folder).exists():
-        return {"success": False, "albums": 0, "processed": 0, "skipped": 0,
-                "errors": ["Output folder not configured or doesn't exist"]}
+        return _result(0, 0, 0, 0,
+                       ["Output folder not configured or doesn't exist"])
 
     files = scan_library(output_folder)
     by_dir: dict[str, list[dict]] = defaultdict(list)
     for f in files:
         by_dir[str(Path(f["path"]).parent)].append(f)
 
-    todo: list[str] = []
-    albums = skipped = 0
-    for entries in by_dir.values():
+    todo_dirs = []
+    skipped = 0
+    for folder, entries in by_dir.items():
         needs = any("REPLAYGAIN_TRACK_GAIN" not in (e.get("all_tags") or {})
                     for e in entries)
         if needs:
-            todo.extend(e["path"] for e in entries)
-            albums += 1
+            todo_dirs.append((folder, [e["path"] for e in entries]))
         else:
             skipped += 1
 
-    if not todo:
-        return {"success": True, "albums": 0, "processed": 0,
-                "skipped": skipped, "errors": []}
+    total = len(todo_dirs)
+    if total == 0:
+        on_progress({"status": "done", "current": 0, "total": 0})
+        return _result(0, 0, 0, skipped, [])
 
-    rg = add_replay_gain(todo)
-    return {"success": rg["success"], "albums": albums,
-            "processed": rg["processed"], "skipped": skipped,
-            "errors": rg["errors"]}
+    processed = albums = 0
+    errors = []
+    cancelled = False
+    for idx, (folder, paths) in enumerate(todo_dirs):
+        if is_cancelled():
+            cancelled = True
+            break
+        name = Path(folder).name
+        on_progress({"status": "analyzing", "current": idx + 1,
+                     "total": total, "file": name})
+        rg = add_replay_gain(paths)
+        if rg["success"]:
+            processed += rg["processed"]
+            albums += 1
+            on_file_done({"file": folder, "success": True, "dest": "",
+                          "message": f"ReplayGain: {name} ({rg['processed']} tracks)"})
+        else:
+            errors.extend(rg["errors"])
+            on_file_done({"file": folder, "success": False,
+                          "error": "; ".join(rg["errors"])})
+
+    on_progress({"status": "done", "current": total, "total": total})
+    return _result(total, albums, processed, skipped, errors, cancelled)
 
 
 def reassign_track_with_art(flac_path: str, new_metadata: dict,

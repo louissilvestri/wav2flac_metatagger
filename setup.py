@@ -39,7 +39,7 @@ def main():
     print("Database ready.")
 
     print("\n" + "=" * 40)
-    print("Setup complete! Run 'python app.py' to start the application.")
+    print("Setup complete! Run 'python -m server --open' (or run.bat) to start.")
     return True
 
 

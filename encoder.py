@@ -201,12 +201,8 @@ def find_flac_exe() -> str | None:
         if Path(p).exists():
             return p
 
-    try:
-        result = subprocess.run(
-            ["where", "flac"], capture_output=True, text=True, timeout=10
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip().split("\n")[0].strip()
-    except Exception:
-        pass
+    import shutil
+    found = shutil.which("flac")
+    if found:
+        return found
     return None

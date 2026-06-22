@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web-next/package-lock.json
+
+      - name: Build front end
+        working-directory: web-next
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble release bundle
+        run: |
+          name="wav2flac_metatagger-${GITHUB_REF_NAME}"
+          mkdir -p "stage/$name"
+          # Tracked source only (node_modules / venv / out are untracked or ignored)
+          git archive HEAD | tar -x -C "stage/$name"
+          # Add the pre-built UI so the bundle runs without Node
+          mkdir -p "stage/$name/web-next/out"
+          cp -r web-next/out/. "stage/$name/web-next/out/"
+          (cd stage && zip -rq "../$name.zip" "$name")
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: wav2flac_metatagger-*.zip
+          generate_release_notes: true

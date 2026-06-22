@@ -32,7 +32,9 @@ export function JobProgress({ jobId, onDone }: {
 
     es.addEventListener("progress", (e) => {
       const p = JSON.parse((e as MessageEvent).data);
-      if (p.status === "encoding") {
+      // Any job that reports a total drives the bar (conversion "encoding",
+      // ReplayGain "analyzing", etc.).
+      if (p.total != null && p.status !== "done") {
         setSseProgress({ current: p.current, total: p.total, file: p.file });
       }
     });

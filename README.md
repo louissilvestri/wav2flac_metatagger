@@ -2,13 +2,14 @@
 
 Convert WAV rips into perfectly tagged, bit-perfect FLAC — with metadata pulled and reconciled from many sources, album art, ReplayGain, and a built-in library manager.
 
-![Status](https://img.shields.io/badge/status-pre--release-orange)
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)
 ![Next.js](https://img.shields.io/badge/Next.js-15-000000)
 ![React](https://img.shields.io/badge/React-19-61DAFB)
 ![Output](https://img.shields.io/badge/output-FLAC%20lossless-1DB954)
-![Tests](https://img.shields.io/badge/tests-200%20passing-success)
+![CI](https://img.shields.io/github/actions/workflow/status/louissilvestri/wav2flac_metatagger/ci.yml?branch=master&label=tests)
 
 ---
 
@@ -100,6 +101,16 @@ Each provider contributes the data it is good at. Album-level descriptive fields
 | iTunes | Core fields, cover art | Not required |
 | Deezer | Core fields, cover art | Not required |
 
+## Install from a release
+
+Each tagged release ships a zip with the front end already built, so you do not need Node to run it:
+
+1. Download `wav2flac_metatagger-<version>.zip` from the [Releases page](https://github.com/louissilvestri/wav2flac_metatagger/releases) and extract it.
+2. Install the Python dependencies and the FLAC tools (see Prerequisites below).
+3. Run `python -m server --open` (or `run.bat` on Windows).
+
+To work on the code instead, build from source as described next.
+
 ## Getting started
 
 ### Prerequisites
@@ -141,7 +152,7 @@ A provider whose required key is missing is simply skipped.
 python -m server --open
 ```
 
-The server starts on `http://127.0.0.1:8178` and `--open` launches the UI in a desktop app window. If an older instance is already running on the port, it is replaced automatically. On Windows you can also use `run_v2.bat`.
+The server starts on `http://127.0.0.1:8178` and `--open` launches the UI in a desktop app window. If an older instance is already running on the port, it is replaced automatically. On Windows you can also use `run.bat`.
 
 ## Configuration
 
@@ -176,4 +187,8 @@ flowchart TD
 
 ## Status and notes
 
-This project is in active pre-release development (version 2.0.0-dev). ReplayGain and all tagging operations are non-destructive to the audio stream: a FLAC's decoded-audio MD5 is unchanged after tagging, and the encoder verifies losslessness against the source WAV.
+Version 2.0.0. ReplayGain and all tagging operations are non-destructive to the audio stream: a FLAC's decoded-audio MD5 is unchanged after tagging, and the encoder verifies losslessness against the source WAV.
+
+## License
+
+Released under the [MIT License](LICENSE).

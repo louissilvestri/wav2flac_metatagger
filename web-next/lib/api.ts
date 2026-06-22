@@ -29,7 +29,10 @@ const put = <T,>(path: string, body: unknown) =>
 
 // ── Types (the shapes the backend actually returns) ──────────────────────────
 
-export interface Health { name: string; version: string; status: string }
+export interface Health {
+  name: string; version: string; status: string;
+  configured?: boolean; output_folder_set?: boolean; flac_available?: boolean;
+}
 
 export type Settings = Record<string, unknown> & {
   input_folder?: string;
@@ -319,9 +322,7 @@ export const api = {
   replayGain: (paths: string[]) =>
     post<{ success: boolean; processed: number; errors: string[] }>(
       "/api/library/replay-gain", { paths }),
-  replayGainLibrary: () =>
-    post<{ success: boolean; albums: number; processed: number; skipped: number; errors: string[] }>(
-      "/api/library/replay-gain-all"),
+  replayGainLibrary: () => post<{ job_id: string }>("/api/library/replay-gain-all"),
   batchReassign: (req: { tracks: unknown[]; album_metadata: Record<string, string>;
                          art_release_id?: string | null; art_url?: string | null }) =>
     post<{ success: boolean; failed: number; total: number;

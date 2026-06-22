@@ -21,7 +21,9 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config import load_settings, save_settings, APP_NAME, APP_VERSION
+import logging
+
+from config import load_settings, save_settings, setup_logging, APP_NAME, APP_VERSION
 from database import init_db, get_recent_logs, get_stats
 from encoder import find_flac_exe
 
@@ -47,11 +49,16 @@ def _ignore_connection_reset(loop, context):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.get_running_loop().set_exception_handler(_ignore_connection_reset)
+    log_file = setup_logging()
+    logging.getLogger("musicmanager").info("Starting %s v%s", APP_NAME, APP_VERSION)
     init_db()
     init_jobs_table()
     orphaned = recover_orphaned_jobs()
     if orphaned:
+        logging.getLogger("musicmanager").info(
+            "Recovered %d orphaned job(s) from a previous run", orphaned)
         print(f"Recovered {orphaned} orphaned job(s) from a previous run")
+    print(f"Logging to {log_file}")
     yield
 
 
@@ -62,7 +69,13 @@ app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=lifespan)
 
 @app.get("/api/health")
 def health():
-    return {"name": APP_NAME, "version": APP_VERSION, "status": "ok"}
+    s = load_settings()
+    flac_path = (s.get("flac_exe_path") or "").strip() or find_flac_exe()
+    configured = bool((s.get("output_folder") or "").strip()) and bool(flac_path)
+    return {"name": APP_NAME, "version": APP_VERSION, "status": "ok",
+            "configured": configured,
+            "output_folder_set": bool((s.get("output_folder") or "").strip()),
+            "flac_available": bool(flac_path)}
 
 
 @app.post("/api/shutdown")
@@ -464,9 +477,20 @@ def library_replay_gain(req: ReplayGainRequest):
 
 @app.post("/api/library/replay-gain-all")
 def library_replay_gain_all():
-    """Scan the whole library and apply ReplayGain to albums missing it."""
-    output_folder = load_settings().get("output_folder", "")
-    return library_service.apply_replay_gain_library(output_folder)
+    """Scan the whole library and apply ReplayGain to albums missing it. Runs as
+    a background job (it can take a while on large libraries) and reports
+    per-album progress; the response is a job handle."""
+    if job_manager.is_running("replaygain"):
+        raise HTTPException(409, "A ReplayGain scan is already running")
+
+    def _target(job_id, payload, ctx):
+        output_folder = load_settings().get("output_folder", "")
+        return library_service.apply_replay_gain_library(
+            output_folder, on_progress=ctx.progress,
+            on_file_done=ctx.file_done, is_cancelled=ctx.is_cancelled)
+
+    job_id = job_manager.start("replaygain", {}, _target)
+    return {"job_id": job_id}
 
 
 @app.get("/api/library/original-album")

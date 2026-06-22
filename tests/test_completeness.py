@@ -5,7 +5,7 @@ Pins the fix for: a fully-tagged album scoring 87% because it lacked
 MusicBrainz-specific artist IDs even though it was tagged from other sources.
 """
 
-from app import calculate_metadata_completeness
+from services.completeness import calculate_metadata_completeness
 from config import PLEX_SCORED_SLOTS
 
 FULL_META = {

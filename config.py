@@ -10,13 +10,35 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 APP_NAME = "Music Manager"
-APP_VERSION = "2.0.0-dev"
+APP_VERSION = "2.0.0"
 
 
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "MusicManager"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 SECRETS_FILE = CONFIG_DIR / "secrets.json"
 DB_FILE = CONFIG_DIR / "activity.db"
+LOG_DIR = CONFIG_DIR / "logs"
+
+
+def setup_logging() -> Path:
+    """Send app logs to a rotating file in the config dir, at the configured
+    level. Console output is left to uvicorn. Returns the log file path."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = LOG_DIR / "app.log"
+    level = getattr(logging, str(load_settings().get("log_level", "INFO")).upper(), logging.INFO)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
+        handler = RotatingFileHandler(log_file, maxBytes=1_000_000,
+                                      backupCount=5, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root.addHandler(handler)
+    return log_file
 
 # Which metadata providers REQUIRE an API key, and the secret name(s) each needs.
 # Providers not listed here (MusicBrainz, Cover Art Archive, iTunes, Deezer) work

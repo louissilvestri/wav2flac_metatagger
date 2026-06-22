@@ -17,6 +17,29 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+# Current on-disk schema version. Bump this and add a block in _run_migrations()
+# whenever the schema changes, so existing activity.db files upgrade cleanly.
+_SCHEMA_VERSION = 1
+
+
+def _run_migrations(conn: sqlite3.Connection):
+    """Apply incremental schema migrations, tracked via PRAGMA user_version.
+
+    The base tables are created with IF NOT EXISTS, so a database from before
+    versioning is already at the v1 shape — we just stamp it. Future changes go
+    here as `if version < N:` blocks that ALTER, then set version = N."""
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    # Example for the next schema change:
+    # if version < 2:
+    #     conn.execute("ALTER TABLE conversion_log ADD COLUMN replaygain_applied INTEGER")
+    #     version = 2
+
+    if version != _SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        conn.commit()
+
+
 def init_db():
     conn = get_connection()
     conn.executescript("""
@@ -68,6 +91,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_cache_key ON metadata_cache(lookup_key);
     """)
     conn.commit()
+    _run_migrations(conn)
     conn.close()
 
 

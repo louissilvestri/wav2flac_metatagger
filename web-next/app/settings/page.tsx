@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, Settings } from "@/lib/api";
 import { Panel, Button, Input, Field, Select, Checkbox, Spinner, Tag } from "@/components/ui";
+import { JobProgress } from "@/components/JobProgress";
 
 export default function SettingsPage() {
   const qc = useQueryClient();
@@ -24,10 +25,12 @@ export default function SettingsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
   });
 
-  // Bulk ReplayGain over the whole library (albums missing it).
+  // Bulk ReplayGain over the whole library (albums missing it) — runs as a
+  // background job; progress is shown via JobProgress.
+  const [rgJob, setRgJob] = useState<string | null>(null);
   const rgAll = useMutation({
     mutationFn: () => api.replayGainLibrary(),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["library"] }),
+    onSuccess: (d) => setRgJob(d.job_id),
   });
 
   if (query.isError) return (
@@ -128,26 +131,25 @@ export default function SettingsPage() {
           </div>
         </div>
         <div className="mt-3 border-t border-white/10 pt-3">
-          <Button variant="outline" disabled={rgAll.isPending}
+          <Button variant="outline" disabled={rgAll.isPending || !!rgJob}
                   onClick={() => rgAll.mutate()}>
-            {rgAll.isPending ? "Scanning library…" : "Scan Library and Apply ReplayGain Now"}
+            {rgAll.isPending ? "Starting…" : "Scan Library and Apply ReplayGain Now"}
           </Button>
           <p className="mt-1 font-mono text-[0.68rem] text-muted">
             Adds loudness tags to existing library albums that don’t have them yet.
-            Audio is never modified.
+            Runs in the background; audio is never modified.
           </p>
-          {rgAll.isSuccess && (
-            <p className="mt-1 font-mono text-[0.68rem] text-ok">
-              {rgAll.data.albums > 0
-                ? `Applied to ${rgAll.data.albums} album(s) (${rgAll.data.processed} files); ${rgAll.data.skipped} already had it.`
-                : `All ${rgAll.data.skipped} album(s) already have ReplayGain.`}
-              {rgAll.data.errors.length > 0 && ` · ${rgAll.data.errors.length} error(s): ${rgAll.data.errors.join("; ")}`}
-            </p>
-          )}
           {rgAll.isError && (
             <p className="mt-1 font-mono text-[0.68rem] text-alert">
               Failed: {String((rgAll.error as Error)?.message ?? rgAll.error)}
             </p>
+          )}
+          {rgJob && (
+            <div className="mt-3">
+              <JobProgress jobId={rgJob} onDone={() => {
+                qc.invalidateQueries({ queryKey: ["library"] });
+              }} />
+            </div>
           )}
         </div>
       </Panel>

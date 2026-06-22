@@ -3,6 +3,7 @@ import { Varela_Round, Comfortaa, Fira_Code } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
 import { NavRail } from "@/components/NavRail";
+import { SetupBanner } from "@/components/SetupBanner";
 
 // Soft Minimalism type system: Varela Round (display), Comfortaa (body),
 // Fira Code (data/mono). Varela Round ships a single 400 weight.
@@ -28,7 +29,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Providers>
           <div className="flex h-screen gap-2 p-2">
             <NavRail />
-            <main className="min-w-0 flex-1 overflow-y-auto pr-1">{children}</main>
+            <main className="min-w-0 flex-1 overflow-y-auto pr-1">
+              <SetupBanner />
+              {children}
+            </main>
           </div>
         </Providers>
       </body>
